@@ -1,4 +1,5 @@
 """从 Paimon 读取并分析健康指标。"""
+
 import statistics
 from collections import defaultdict
 from datetime import UTC, datetime, timedelta

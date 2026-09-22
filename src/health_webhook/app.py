@@ -1,20 +1,32 @@
-"""Flask 入口：health.bupt.site -> JSONL + Paimon 双写。"""
+"""Flask 入口：health.bupt.site -> 健康看板 + JSONL/Paimon 双写。"""
 
-from flask import Flask, jsonify, request
+from pathlib import Path
+
+from flask import Flask, jsonify, request, send_from_directory
 from pydantic import ValidationError
 
-from health_webhook import store
+from health_webhook import dashboard, store
 from health_webhook.config import settings
 from health_webhook.models import HealthPayload
 
-app = Flask(__name__)
+WEB_DIR = Path(__file__).parent / "web"
+app = Flask(__name__, static_folder=str(WEB_DIR), static_url_path="/static")
 
 
 @app.get("/")
+def index():
+    return send_from_directory(WEB_DIR, "index.html")
+
+
 @app.get("/health")
 @app.get("/healthz")
 def health():
     return jsonify(ok=True, service="health-webhook-paimon", warehouse=settings.oss_warehouse)
+
+
+@app.get("/api/dashboard")
+def api_dashboard():
+    return jsonify(dashboard.dashboard_data())
 
 
 @app.post("/")
