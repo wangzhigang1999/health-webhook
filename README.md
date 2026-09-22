@@ -130,6 +130,21 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now health-webhook
 ```
 
+## 小文件合并（Compaction）
+
+pypaimon 直写**不会**自动合并小文件（每次提交产生一个新 parquet）。通过 GitHub Actions 定时跑 Spark 做归并：
+
+- 触发：每日 03:00（北京时间）+ 手动 `workflow_dispatch`
+- 实现：`scripts/compact_paimon.py`（PySpark + `CALL sys.compact`）
+
+需在 GitHub 仓库配置 3 个 Secrets：
+
+| Secret | 说明 |
+|--------|------|
+| `OSS_WAREHOUSE` | Paimon 仓库，如 `oss://zhigang-health/paimon/health` |
+| `OSS_ACCESS_KEY_ID` | OSS AccessKey ID（CI 不在 VPC，需一对 AK/SK） |
+| `OSS_ACCESS_KEY_SECRET` | OSS AccessKey Secret |
+
 ## License
 
 [MIT](LICENSE)

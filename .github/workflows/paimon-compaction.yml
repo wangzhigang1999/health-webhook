@@ -1,0 +1,37 @@
+name: Paimon Compaction
+
+on:
+  schedule:
+    # UTC 19:00 == 北京时间次日 03:00
+    - cron: "0 19 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  compact:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "11"
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install PySpark
+        run: pip install "pyspark>=3.5,<3.6"
+
+      - name: Compact Paimon table
+        run: python scripts/compact_paimon.py
+        env:
+          OSS_WAREHOUSE: ${{ secrets.OSS_WAREHOUSE }}
+          # CI runner 不在 VPC 内，必须用公网端点
+          OSS_ENDPOINT: oss-cn-beijing.aliyuncs.com
+          OSS_ACCESS_KEY_ID: ${{ secrets.OSS_ACCESS_KEY_ID }}
+          OSS_ACCESS_KEY_SECRET: ${{ secrets.OSS_ACCESS_KEY_SECRET }}
