@@ -1,0 +1,17 @@
+[Unit]
+Description=Health webhook -> Apache Paimon on OSS
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/var/lib/dsh/workspace/health-webhook
+EnvironmentFile=/var/lib/dsh/workspace/health-webhook/.env
+ExecStart=/var/lib/dsh/workspace/health-webhook/.venv/bin/python -m health_webhook
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

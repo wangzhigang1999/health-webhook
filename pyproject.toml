@@ -1,0 +1,56 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "health-webhook"
+version = "0.1.0"
+description = "Ingest Apple HealthKit data via webhook and write it to Apache Paimon on Alibaba Cloud OSS."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "Zhigang Wang" }]
+keywords = ["healthkit", "paimon", "oss", "webhook", "lakehouse"]
+dependencies = [
+    "pypaimon[oss]==2.0.0",
+    "flask>=3.0",
+    "waitress>=3.0",
+    "pydantic>=2.7",
+    "pydantic-settings>=2.3",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.6",
+    "pyright>=1.1.370",
+]
+
+[project.scripts]
+health-webhook = "health_webhook.app:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/health_webhook"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "UP", "B", "SIM", "RUF"]
+# 中文文档字符串/注释里全角标点是正常写法，不算「歧义字符」
+ignore = ["RUF002", "RUF003"]
+
+[tool.ruff.format]
+quote-style = "double"
+
+[tool.pyright]
+pythonVersion = "3.11"
+typeCheckingMode = "basic"
+include = ["src", "tests"]
+exclude = [".venv", "**/__pycache__"]
+reportMissingTypeStubs = false
+reportUnknownMemberType = false
+reportUnknownVariableType = false
+reportUnknownArgumentType = false

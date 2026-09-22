@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.venv/
+.venv-*/
+
+# 环境变量与密钥（敏感信息不入库）
+.env
+.env.*
+!.env.example
+.token
+
+# 运行时数据
+*.jsonl
+data/
+
+# 工具缓存
+.pytest_cache/
+.ruff_cache/
+.pyright/
+.mypy_cache/
+
+# IDE / OS
+.idea/
+.vscode/
+.DS_Store

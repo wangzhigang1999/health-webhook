@@ -1,0 +1,7 @@
+health.bupt.site {
+	encode zstd gzip
+
+	# 所有请求转发给本机 webhook 接收器（容器 health-webhook，127.0.0.1:8081）。
+	# 接收器负责 Bearer Token 校验；GET /health 对外开放用于探活。
+	reverse_proxy 127.0.0.1:8081
+}
