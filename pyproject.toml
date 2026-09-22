@@ -28,6 +28,11 @@ dev = [
 
 [project.scripts]
 health-webhook = "health_webhook.app:main"
+health-webhook-backfill = "health_webhook.backfill:main"
+
+[project.urls]
+Homepage = "https://github.com/wangzhigang1999/health-webhook"
+Repository = "https://github.com/wangzhigang1999/health-webhook"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/health_webhook"]

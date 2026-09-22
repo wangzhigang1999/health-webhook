@@ -87,6 +87,19 @@ def write(rows: list[MetricRow]) -> int:
     return len(rows)
 
 
+def read_sample_uuids() -> set[str]:
+    """读取 Paimon 表中已存在的 sample_uuid 集合。"""
+    table = _get_table()
+    read_builder = table.new_read_builder()
+    table_scan = read_builder.new_scan()
+    table_read = read_builder.new_read()
+    splits = table_scan.plan().splits()
+    result = table_read.to_arrow(splits)
+    if result.num_rows == 0:
+        return set()
+    return {uuid for uuid in result.column("sample_uuid").to_pylist() if uuid is not None}
+
+
 def warmup() -> None:
     """启动时预热：验证 OSS 连通并建表。"""
     _get_table()
