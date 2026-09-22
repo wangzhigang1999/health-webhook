@@ -37,6 +37,10 @@ def main() -> None:
         .config("spark.sql.catalog.paimon.fs.oss.endpoint", endpoint)
         .config("spark.sql.catalog.paimon.fs.oss.accessKeyId", ak)
         .config("spark.sql.catalog.paimon.fs.oss.accessKeySecret", sk)
+        # 双保险：同时写 Hadoop conf，兼容 Paimon 从任一命名空间读取 fs.oss.*
+        .config("spark.hadoop.fs.oss.endpoint", endpoint)
+        .config("spark.hadoop.fs.oss.accessKeyId", ak)
+        .config("spark.hadoop.fs.oss.accessKeySecret", sk)
         .config("spark.ui.enabled", "false")
         .getOrCreate()
     )
