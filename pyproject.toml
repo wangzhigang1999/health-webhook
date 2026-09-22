@@ -29,6 +29,7 @@ dev = [
 [project.scripts]
 health-webhook = "health_webhook.app:main"
 health-webhook-backfill = "health_webhook.backfill:main"
+health-webhook-analyze = "health_webhook.analyze:main"
 
 [project.urls]
 Homepage = "https://github.com/wangzhigang1999/health-webhook"
@@ -44,8 +45,8 @@ src = ["src", "tests"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "N", "UP", "B", "SIM", "RUF"]
-# 中文文档字符串/注释里全角标点是正常写法，不算「歧义字符」
-ignore = ["RUF002", "RUF003"]
+# 中文文档/注释/输出字符串里的全角标点是正常写法，不算「歧义字符」
+ignore = ["RUF001", "RUF002", "RUF003"]
 
 [tool.ruff.format]
 quote-style = "double"
