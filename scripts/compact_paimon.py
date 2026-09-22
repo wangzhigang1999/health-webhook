@@ -48,7 +48,7 @@ def main() -> None:
     try:
         # `CALL sys.*` 需要把当前 catalog 切到 paimon，否则会解析到 spark_catalog 报错
         spark.catalog.setCurrentCatalog("paimon")
-        spark.sql(f"CALL sys.compact(table => '{table}')")
+        spark.sql(f"CALL sys.compact(table => '{table}', compact_strategy => 'full')")
         spark.sql(f"CALL sys.expire_snapshots(table => '{table}', retain_max => 30)")
     finally:
         spark.stop()
