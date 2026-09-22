@@ -53,10 +53,10 @@ def _get_catalog() -> Any:
 
 def _get_table() -> Any:
     ident = f"{settings.database}.{settings.table_metrics}"
+    # 不设 bucket：append 表无需分桶，且 Spark 端校验会要求 bucket-key
     schema = Schema.from_pyarrow_schema(
         pa_schema=METRICS_SCHEMA,
         partition_keys=["dt"],
-        options={"bucket": "2"},
         comment="health metrics (long table)",
     )
     cat = _get_catalog()
