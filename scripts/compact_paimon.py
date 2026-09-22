@@ -8,7 +8,8 @@ import os
 
 from pyspark.sql import SparkSession
 
-PAIMON_PACKAGE = "org.apache.paimon:paimon-spark-3.5_2.12:2.0.0"
+# spark connector 的 fat jar 不包含 OSS 文件系统实现，需额外加 paimon-oss
+PAIMON_PACKAGE = "org.apache.paimon:paimon-spark-3.5_2.12:2.0.0,org.apache.paimon:paimon-oss:2.0.0"
 
 
 def main() -> None:
