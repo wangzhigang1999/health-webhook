@@ -246,13 +246,20 @@ def build(args):
         export.mkdir(parents=True)
         files = []
         db.execute("CREATE TEMP TABLE current_export AS SELECT * FROM samples_current")
-        db.execute(
-            """
-            COPY (SELECT * FROM current_export ORDER BY dt,metric_type,start_ms,sample_uuid)
-            TO ? (FORMAT PARQUET, COMPRESSION ZSTD, PARTITION_BY(dt))
-        """,
-            [str(export / "dataset")],
-        )
+        # Write one day at a time: hundreds of concurrently buffered partition writers
+        # can exceed the memory budget even when the full dataset is relatively small.
+        db.execute("SET threads=1")
+        days = db.execute("SELECT DISTINCT dt FROM current_export ORDER BY dt").fetchall()
+        for (day,) in days:
+            destination = export / "dataset" / f"dt={day}" / "data.parquet"
+            destination.parent.mkdir(parents=True)
+            target_literal = str(destination).replace("'", "''")
+            db.execute(
+                "COPY (SELECT * EXCLUDE(dt) FROM current_export WHERE dt=? "
+                "ORDER BY metric_type,start_ms,sample_uuid) "
+                f"TO '{target_literal}' (FORMAT PARQUET, COMPRESSION ZSTD, ROW_GROUP_SIZE 16384)",
+                [day],
+            )
         previous_files = {f["key"]: f for f in previous["files"]} if previous else {}
         for file in sorted((export / "dataset").glob("dt=*/*.parquet")):
             day = file.parent.name.removeprefix("dt=")
