@@ -9,9 +9,51 @@ from datetime import date, datetime, time, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+from health_webhook.iot_weight import SOURCE as WEIGHT_SOURCE
+
 TZ = timezone(timedelta(hours=8))
 ASLEEP = {"asleep", "asleepUnspecified", "asleepCore", "asleepDeep", "asleepREM"}
 ADDITIVE = {"StepCount", "AppleExerciseTime", "ActiveEnergyBurned"}
+
+
+def collect_weight(db, day, table):
+    rows = db.execute(
+        f"SELECT start_ms,value,json_extract_string(payload,'$.iot.assignment') FROM {table} "
+        "WHERE metric_type='HKQuantityTypeIdentifierBodyMass' AND source_bundle=? "
+        "AND unit='kg' AND dt BETWEEN ? AND ? ORDER BY start_ms",
+        [WEIGHT_SOURCE, day - timedelta(days=35), day],
+    ).fetchall()
+    daily = defaultdict(list)
+    for ms, value, _assignment in rows:
+        if value is not None and math.isfinite(value) and 0 < value < 500:
+            daily[str(local_day(ms))].append(value)
+    history = {d: statistics.median(v) for d, v in sorted(daily.items())}
+    dates = [str(day - timedelta(days=i)) for i in range(27, -1, -1)]
+    last = db.execute(
+        f"SELECT start_ms,value FROM {table} WHERE source_bundle=? "
+        "AND metric_type='HKQuantityTypeIdentifierBodyMass' AND unit='kg' "
+        "AND dt<=? AND value>0 AND value<500 ORDER BY start_ms DESC LIMIT 1",
+        [WEIGHT_SOURCE, day],
+    ).fetchall()
+    week = [history[d] for d in dates[-7:] if d in history]
+    previous = [history[d] for d in dates[-14:-7] if d in history]
+    return {
+        "today": history.get(str(day)),
+        "today_samples": len(daily.get(str(day), [])),
+        "latest": {
+            "kg": last[0][1],
+            "at": datetime.fromtimestamp(last[0][0] / 1000, TZ).isoformat(),
+        }
+        if last
+        else None,
+        "dates": dates,
+        "values": [history.get(d) for d in dates],
+        "week_mean": statistics.mean(week) if week else None,
+        "week_days": len(week),
+        "previous_mean": statistics.mean(previous) if previous else None,
+        "previous_days": len(previous),
+        "inferred": any(assignment != "confirmed" for _, _, assignment in rows),
+    }
 
 
 def union_ms(intervals):
@@ -178,6 +220,7 @@ def collect(db, day: date, table="samples_current", history_days=35) -> dict[str
         "sleep_baseline": median([nights[d]["minutes"] for d in history if d in nights]),
         "daily": daily_values,
         "vo2max": {"value": latest[0][0], "date": str(latest[0][1])} if latest else None,
+        "weight": collect_weight(db, day, table),
     }
 
 
@@ -270,6 +313,33 @@ def render(report: dict[str, Any]) -> str:
         body.append(
             f'<p class="note">{esc("、".join(sparse))} 心率记录覆盖较少时段，可能存在佩戴或采集空缺；低步数不一定代表活动少。</p>'  # noqa: E501
         )
+    weight = report.get("weight")
+    if weight and weight["latest"]:
+        latest = weight["latest"]
+        body.append(
+            '<section class="vitals-panel"><h3>体重 · IoT 体重秤</h3>'
+            '<div class="sleep-grid">'
+            "<div><span>当天中位数</span>"
+            f"<strong>{fmt(weight['today'], 2)}<small> kg</small></strong></div>"
+            f"<div><span>近 7 日均值 · 有效 {weight['week_days']}/7 日</span>"
+            f"<strong>{fmt(weight['week_mean'], 2)}<small> kg</small></strong></div>"
+            f"<div><span>前 7 日均值 · 有效 {weight['previous_days']}/7 日</span>"
+            f"<strong>{fmt(weight['previous_mean'], 2)}<small> kg</small></strong></div>"
+            f"<div><span>最近一次 · {esc(latest['at'][:10])}</span>"
+            f"<strong>{fmt(latest['kg'], 2)}<small> kg</small></strong></div></div>"
+            '<div class="chart-frame"><canvas id="weight" role="img" '
+            'aria-label="近28天体重每日中位数"></canvas></div>'
+            '<p class="note">曲线为每日中位数，周均值先按日汇总，避免一天多次称重占更大权重；'
+            "缺失日期留空，不用旧值填补当天。短期变化不等于肌肉或脂肪变化。</p>"
+        )
+        if weight["inferred"]:
+            body.append(
+                '<p class="note">归属沿用 IoT 的“我”判定，包含按体重区间自动推断的记录；'
+                "误归属可在源链路修正。</p>"
+            )
+        body.append("</section>")
+    else:
+        body.append('<p class="note">体重：截至报告日期，尚未收到 IoT 中归属“我”的有效称重。</p>')
     body.append(
         '<section class="vitals-panel"><h3>夜间身体状态</h3><table><thead><tr><th>指标</th><th>当晚</th><th>前 7 晚</th><th>变化</th></tr></thead><tbody>'  # noqa: E501
     )
@@ -307,7 +377,7 @@ def render(report: dict[str, Any]) -> str:
         if vo2
         else "近期没有可用 VO₂ max 记录。"
     )
-    body.append("体重来自独立链路，未接入时不据 HealthKit 缺失判断未称重。</div>")
+    body.append("</div>")
     body.append(
         '<details><summary>数据口径与局限</summary><ol><li>选用近期主要的同一手表来源，不叠加手机。步数与热量跨午夜按时长比例估算，可能与健康 App 合并结果不同。</li><li>睡眠相隔不超过 90 分钟的片段归为一个时段；每天选醒来日期对应的最长主睡眠，睡眠时长合并重叠后扣除清醒。不是全部午睡总和。</li><li>运动重叠时段合并；缺失日不填零。心率、HRV 先取每日中位数，再与前 7 日中位数比较；夜间指标同理。血氧比例乘以 100。</li><li>补传会修订后续快照。结果仅描述已收到记录，不代替医疗评估。<a href="https://support.apple.com/en-us/108906">Apple 睡眠记录说明</a></li></ol></details><footer class="footer"><span>Apple Watch 记录 · 后续补传可能修订结果</span><span>私人健康简报</span></footer>'  # noqa: E501
     )
@@ -332,6 +402,7 @@ def render(report: dict[str, Any]) -> str:
         "stageLabels": stage_labels,
         "sleepMinutes": sleep["minutes"] if sleep else 1,
         "sleepBaselineHours": baseline / 60 if baseline is not None else None,
+        "weight": weight,
     }
     template = (
         Path(__file__).with_name("templates").joinpath("brief.html").read_text(encoding="utf-8")

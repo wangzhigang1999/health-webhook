@@ -4,13 +4,15 @@ import hmac
 import logging
 import threading
 
-from flask import Flask, jsonify, request
+from flask import Flask, jsonify, redirect, request
 from werkzeug.exceptions import RequestEntityTooLarge
 
 from health_webhook.config import settings
 from health_webhook.raw_store import OutboxFullError, inspect_payload, save, warmup
+from health_webhook.report_reader import reader
 
 app = Flask(__name__, static_folder=None)
+app.register_blueprint(reader)
 app.config["MAX_CONTENT_LENGTH"] = settings.max_body_bytes
 _slots = threading.BoundedSemaphore(2)
 log = logging.getLogger(__name__)
@@ -20,6 +22,8 @@ log = logging.getLogger(__name__)
 @app.get("/health")
 @app.get("/healthz")
 def health():
+    if request.path == "/" and request.accept_mimetypes.best == "text/html":
+        return redirect("/reports")
     return jsonify(ok=True, service="health-webhook-oss", storage="oss")
 
 

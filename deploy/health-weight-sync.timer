@@ -1,0 +1,11 @@
+[Unit]
+Description=Check IoT scale changes every 15 minutes
+
+[Timer]
+OnBootSec=2min
+OnCalendar=*-*-* *:00,15,30,45:00
+Persistent=true
+Unit=health-weight-sync.service
+
+[Install]
+WantedBy=timers.target

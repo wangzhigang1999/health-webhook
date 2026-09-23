@@ -1,0 +1,28 @@
+health.bupt.site {
+    encode zstd gzip
+    handle /login {
+        rewrite * /login.html
+        root * /var/www/dashboard-auth
+        file_server
+    }
+    handle /api/login {
+        reverse_proxy 127.0.0.1:8801
+    }
+    handle /api/logout {
+        reverse_proxy 127.0.0.1:8801
+    }
+    @reports path /reports /reports/
+    handle @reports {
+        forward_auth 127.0.0.1:8801 {
+            uri /api/check?
+        }
+        reverse_proxy 127.0.0.1:8081 {
+            header_up X-Health-Report-Key __REPORT_ACCESS_KEY__
+        }
+    }
+    handle {
+        reverse_proxy 127.0.0.1:8081 {
+            header_up -X-Health-Report-Key
+        }
+    }
+}

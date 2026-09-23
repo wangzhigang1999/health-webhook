@@ -9,7 +9,7 @@
 - 原 endpoint、Bearer Token 和成功响应字段兼容；OSS 保存确认后才返回 200。
 - 原始批次 gzip 压缩，以 SHA-256 命名，禁止覆盖；重复上传安全。
 - ECS 仅保留有界 outbox；网络失败返回 503，后台重试未确认批次。磁盘满不丢弃待上传数据。
-- GET /、/health、/healthz 返回探活信息。看板与静态资源已经移除。
+- GET /health、/healthz 返回探活信息；浏览器打开根地址会转到 /reports。原看板已移除。
 - 原始字段、workout 和 deletedUuids 完整保留。分析时样本 UUID 去重、删除标记优先，同 UUID 内容冲突单独列出。
 
 ## OSS 布局
@@ -95,3 +95,11 @@ uv run --no-sync ruff format --check .
 uv run --no-sync pyright
 uv run --no-sync pytest -q
 ```
+
+## 在线阅读与体重链路
+
+固定入口 `https://health.bupt.site/reports`，复用个人空间登录。Caddy forward_auth 成功后用独立 `REPORT_ACCESS_KEY` 访问后端，用户浏览器不持有 OSS 凭证或这个内部密钥。读取器只展示已提交 manifest 引用的 HTML，验证 SHA-256，并禁止浏览器缓存/搜索引擎收录；历史下拉菜单显示最近一年已生成的日报。公开 GitHub 不托管报告。首次部署时必须同时配置 Caddy 登录路由和内部密钥；仅启动 Flask 不会开放报告访问。
+
+IoT 体重同步器只读取本机 `127.0.0.1:8802/api/dashboard` 中 person=me 的稳定有效记录，保留推断/确认归属标记，不导出 partner。以 `HKQuantityTypeIdentifierBodyMass` / kg、独立 source_bundle `site.bupt.iot.scale.me` 写入现有不可变 raw，再由每日 CI 合并进按日 Parquet，因此 Windows `health_metrics` 也能查询。体重按日中位数与周均值展示，缺失不填零。
+
+安装 `deploy/health-weight-sync.service` 和 `.timer`，每 15 分钟短暂检查；没有变化不写 OSS，不常驻做分析。首次回填已有记录，上传确认后才推进游标；失败保留待提交事务，后续先恢复再处理新变化。IoT 更正/撤销归属产生删除事件与新版本 UUID，保留审计历史。游标位于 DATA_DIR/iot-weight，属于同步状态，迁移时应保留，不能当作普通缓存删除。体重权威源仍是 IoT SQLite，这条链路不是该库的完整备份。

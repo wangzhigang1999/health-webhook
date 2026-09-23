@@ -12,6 +12,8 @@ class Settings(BaseSettings):
 
     # 认证
     auth_token: str = ""
+    # Internal Caddy-to-reader capability; never reuse the phone upload token.
+    report_access_key: str = ""
 
     # 有界待上传队列及历史 JSONL 迁移
     data_dir: str = "/data"

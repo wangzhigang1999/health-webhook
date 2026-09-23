@@ -13,6 +13,7 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import suppress
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Any
 
 import duckdb
 import oss2
@@ -440,6 +441,7 @@ def build(args):
             "state": state,
             "report": report_info,
             "report_json": report_json,
+            "report_history": report_history(previous, report_info, report_day),
             "quality": quality,
         }
         manifest_path = export / "manifest.json"
@@ -463,6 +465,19 @@ def build(args):
         print(
             "Private Parquet snapshot and daily report published; manifest committed.", flush=True
         )
+
+
+def report_history(previous, current, day) -> list[dict[str, Any]]:
+    """Keep links to committed daily reports; replace a day's entry on regeneration."""
+    history: dict[str, dict[str, Any]] = {
+        item["date"]: item for item in (previous or {}).get("report_history", [])
+    }
+    if previous and previous.get("report", {}).get("key", "").endswith(".html"):
+        prior = previous["report"]
+        prior_day = prior["key"].split("/date=", 1)[1].split("/", 1)[0]
+        history[prior_day] = {**prior, "date": prior_day}
+    history[str(day)] = {**current, "date": str(day)}
+    return [history[d] for d in sorted(history, reverse=True)[:366]]
 
 
 def pull(args):

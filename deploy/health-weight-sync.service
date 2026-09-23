@@ -1,0 +1,15 @@
+[Unit]
+Description=Archive personal IoT weight changes to private health OSS
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/var/lib/dsh/workspace/health-webhook-v2
+EnvironmentFile=/var/lib/dsh/workspace/health-webhook/.env
+ExecStart=/var/lib/dsh/workspace/health-webhook-v2/.venv/bin/python -m health_webhook.iot_weight
+TimeoutStartSec=90
+MemoryMax=128M
+CPUQuota=50%
+NoNewPrivileges=true
+PrivateTmp=true
