@@ -143,6 +143,47 @@ def test_full_batch_has_bounded_json_parse_memory(tmp_path):
         db.close()
 
 
+def test_multipart_order_commit_guard_and_abort(tmp_path):
+    import pytest
+
+    from health_webhook.offline import multipart_file
+
+    path = tmp_path / "checkpoint.bin"
+    path.write_bytes(b"a" * (8 * 1024 * 1024) + b"b" * 1024)
+
+    class Target:
+        aborted = False
+        fail_commit = False
+
+        def init_multipart_upload(self, key, headers):
+            return SimpleNamespace(upload_id="our-upload")
+
+        def upload_part(self, key, upload_id, number, content, headers):
+            import oss2
+
+            assert headers["Content-MD5"] == oss2.utils.content_md5(content)
+            assert content == (b"a" * (8 * 1024 * 1024) if number == 1 else b"b" * 1024)
+            return SimpleNamespace(etag=str(number), crc=None)
+
+        def complete_multipart_upload(self, key, upload_id, parts, headers):
+            assert headers["x-oss-forbid-overwrite"] == "true"
+            assert [p.part_number for p in parts] == [1, 2]
+            if self.fail_commit:
+                raise RuntimeError("simulated failed commit")
+
+        def abort_multipart_upload(self, key, upload_id):
+            assert upload_id == "our-upload"
+            self.aborted = True
+
+    target = Target()
+    multipart_file(target, "private-state", path, {"x-oss-forbid-overwrite": "true"})
+    assert not target.aborted
+    target.fail_commit = True
+    with pytest.raises(RuntimeError):
+        multipart_file(target, "private-state", path, {"x-oss-forbid-overwrite": "true"})
+    assert target.aborted
+
+
 def test_publish_pull_and_incremental_restore(tmp_path, monkeypatch):
     import gzip
     import io

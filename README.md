@@ -54,7 +54,7 @@ uv run --no-sync health-webhook-migrate --source /path/to/events.jsonl
 
 仓库 Secrets：`OSS_ACCESS_KEY_ID`、`OSS_ACCESS_KEY_SECRET`；Bucket 默认 zhigang-health，北京公网 endpoint。CI 只在私有 OSS 写分析结果/日报，不将健康记录写进公开日志、Actions artifacts、Pages 或 Git 提交。
 
-CI 从压缩 DuckDB 检查点恢复，只导入新增原始对象；当前版本会重新导出有效样本，但内容不变的分区复用旧 OSS 对象。不是全量重新下载原始文件。检查点和输出下载会产生 OSS 公网流量费。
+CI 从压缩 DuckDB 检查点恢复，只导入新增原始对象；当前版本会重新导出有效样本，但内容不变的分区复用旧 OSS 对象。不是全量重新下载原始文件。大文件使用有界并行分片上传；最终提交仍禁止覆盖。检查点和输出下载会产生 OSS 公网流量费。
 
 报表按前一日样本日期输出各指标样本数、数值型最小/最大/平均、数据质量及本次新增/删除事件数。数据包含补传，迟到样本在后续快照反映；报表不等同 Apple 健康跨设备去重总量，分类代码不求均值，不做健康诊断。
 

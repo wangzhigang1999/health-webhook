@@ -7,7 +7,9 @@ import hashlib
 import json
 import os
 import shutil
+import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import suppress
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -167,7 +169,10 @@ def put_file(bucket, key, path, *, immutable=True):
     if immutable:
         headers["x-oss-forbid-overwrite"] = "true"
     try:
-        bucket.put_object_from_file(key, str(path), headers=headers)
+        if Path(path).stat().st_size >= 32 * 1024 * 1024:
+            multipart_file(bucket, key, path, headers)
+        else:
+            bucket.put_object_from_file(key, str(path), headers=headers)
     except oss2.exceptions.ServerError as exc:
         if exc.status != 409 or exc.code != "FileAlreadyExists":
             raise
@@ -175,6 +180,43 @@ def put_file(bucket, key, path, *, immutable=True):
         if result.headers.get("x-oss-meta-sha256") != digest:
             raise ValueError("published object digest mismatch") from None
     return {"key": key, "sha256": digest, "bytes": Path(path).stat().st_size}
+
+
+def multipart_file(bucket, key, path, headers):
+    """Bound large transfers; pass forbid-overwrite on the final atomic commit too."""
+    upload_id = bucket.init_multipart_upload(key, headers=headers).upload_id
+    part_bytes = 8 * 1024 * 1024
+
+    def upload_part(number):
+        with Path(path).open("rb") as stream:
+            stream.seek((number - 1) * part_bytes)
+            content = stream.read(part_bytes)
+        for attempt in range(3):
+            try:
+                result = bucket.upload_part(
+                    key,
+                    upload_id,
+                    number,
+                    content,
+                    headers={"Content-MD5": oss2.utils.content_md5(content)},
+                )
+                return oss2.models.PartInfo(
+                    number, result.etag, size=len(content), part_crc=result.crc
+                )
+            except oss2.exceptions.RequestError:
+                if attempt == 2:
+                    raise
+                time.sleep(2**attempt)
+
+    try:
+        count = (Path(path).stat().st_size + part_bytes - 1) // part_bytes
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            parts = list(pool.map(upload_part, range(1, count + 1)))
+        bucket.complete_multipart_upload(key, upload_id, parts, headers=headers)
+    except BaseException:
+        with suppress(Exception):
+            bucket.abort_multipart_upload(key, upload_id)
+        raise
 
 
 def download_checked(bucket, item, path):
@@ -211,6 +253,7 @@ def build(args):
         previous = load_latest(bucket)
         dbpath = work / "health.duckdb"
         if not dbpath.exists() and previous and previous.get("state"):
+            print("Restoring private analysis checkpoint.", flush=True)
             checkpoint = work / "checkpoint.duckdb.gz"
             download_checked(bucket, previous["state"], checkpoint)
             temporary = dbpath.with_suffix(".part")
@@ -245,6 +288,7 @@ def build(args):
         export = work / "exports" / generation
         export.mkdir(parents=True)
         files = []
+        print("Exporting daily partitions.", flush=True)
         db.execute("CREATE TEMP TABLE current_export AS SELECT * FROM samples_current")
         # Write one day at a time: hundreds of concurrently buffered partition writers
         # can exceed the memory budget even when the full dataset is relatively small.
@@ -370,8 +414,10 @@ def build(args):
         db.close()
         # State is a private checkpoint, not a concurrently writable remote database.
         state_path = export / "state.duckdb.gz"
+        print("Compressing private analysis checkpoint.", flush=True)
         with dbpath.open("rb") as src, gzip.open(state_path, "wb", compresslevel=1) as dst:
             shutil.copyfileobj(src, dst)
+        print("Publishing private checkpoint with bounded multipart transfers.", flush=True)
         state = put_file(bucket, f"{ROOT}/state/{generation}.duckdb.gz", state_path)
         manifest = {
             "schema_version": 1,
