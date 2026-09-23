@@ -185,7 +185,7 @@ def put_file(bucket, key, path, *, immutable=True):
 def multipart_file(bucket, key, path, headers):
     """Bound large transfers; pass forbid-overwrite on the final atomic commit too."""
     upload_id = bucket.init_multipart_upload(key, headers=headers).upload_id
-    part_bytes = 8 * 1024 * 1024
+    part_bytes = oss2.determine_part_size(Path(path).stat().st_size, preferred_size=256 * 1024)
 
     def upload_part(number):
         with Path(path).open("rb") as stream:

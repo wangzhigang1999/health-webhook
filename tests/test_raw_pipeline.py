@@ -149,7 +149,7 @@ def test_multipart_order_commit_guard_and_abort(tmp_path):
     from health_webhook.offline import multipart_file
 
     path = tmp_path / "checkpoint.bin"
-    path.write_bytes(b"a" * (8 * 1024 * 1024) + b"b" * 1024)
+    path.write_bytes(b"a" * (256 * 1024) + b"b" * 1024)
 
     class Target:
         aborted = False
@@ -162,7 +162,7 @@ def test_multipart_order_commit_guard_and_abort(tmp_path):
             import oss2
 
             assert headers["Content-MD5"] == oss2.utils.content_md5(content)
-            assert content == (b"a" * (8 * 1024 * 1024) if number == 1 else b"b" * 1024)
+            assert content == (b"a" * (256 * 1024) if number == 1 else b"b" * 1024)
             return SimpleNamespace(etag=str(number), crc=None)
 
         def complete_multipart_upload(self, key, upload_id, parts, headers):
