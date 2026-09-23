@@ -1,150 +1,93 @@
 # health-webhook
 
-把 Apple HealthKit 数据经 webhook 摄入后，**双写 JSONL + Apache Paimon（阿里云 OSS）** 的开源实现。
+保持现有 HealthKit 上传地址的轻量 OSS 接收器。原始数据保存到私有 OSS；GitHub Actions 每天离线整理为按天分区的 Parquet 和私有日报；Windows DuckDB 按需下载分析。
 
-## 特性
+## 数据流
 
-- **双写兜底**：每条数据先落 JSONL（永不丢），再打平写入 Paimon 湖表
-- **OSS 直写**：通过 [pypaimon](https://paimon.apache.org) 直写 OSS，无 Flink/Spark 常驻进程
-- **内网端点 + 免密**：OSS 走 `*-internal` 内网域名（省公网流量），ECS 实例 RAM 角色自动拉取/刷新 STS 临时凭证
-- **现代 Python 工程**：`pyproject.toml` + `src` 布局，pydantic / pydantic-settings，ruff + pyright + pytest
-- **敏感信息外置**：密钥全部走 `.env`，`.env.example` 提供模板，`.gitignore` 保证不入库
+手机 POST / 或 /ingest → Caddy → 接收器 → 私有 OSS raw → 每日 Actions → 分区 Parquet + 日报 → Windows DuckDB。
 
-## 架构
+- 原 endpoint、Bearer Token 和成功响应字段兼容；OSS 保存确认后才返回 200。
+- 原始批次 gzip 压缩，以 SHA-256 命名，禁止覆盖；重复上传安全。
+- ECS 仅保留有界 outbox；网络失败返回 503，后台重试未确认批次。磁盘满不丢弃待上传数据。
+- GET /、/health、/healthz 返回探活信息。看板与静态资源已经移除。
+- 原始字段、workout 和 deletedUuids 完整保留。分析时样本 UUID 去重、删除标记优先，同 UUID 内容冲突单独列出。
 
-```
-iPhone / Apple Watch
-      │  HealthKit 批量 JSON
-      ▼
-health.bupt.site (Caddy :443, 自动 HTTPS)
-      │  reverse_proxy
-      ▼
-Flask + waitress (本机 127.0.0.1:8081)
-      ├─ 校验 Bearer Token
-      ├─ JSONL 兜底 → events.jsonl
-      └─ pydantic 解析 → 打平 → Paimon 直写
-             └─ oss://<bucket>/paimon/health/default/health_metrics
+## OSS 布局
+
+```text
+health/v2/raw/default/<hash-prefix>/<sha256>.json.gz
+health/v2/parquet/samples/dt=YYYY-MM-DD/<sha256>.parquet
+health/v2/manifests/<generation>.json
+health/v2/manifests/latest.json
+health/v2/reports/date=YYYY-MM-DD/<generation>.md
+health/v2/reports/date=YYYY-MM-DD/<generation>.json
+health/v2/state/<generation>.duckdb.gz
 ```
 
-## 快速开始
+所有对象保持私有。分区日期取样本开始时间（北京时间），不是上传日期。清单发布成功才切换最新版本；不要 glob OSS 下所有 Parquet，因为旧版本可能仍保留。Windows 下载器只读取清单引用的文件。
+
+raw 永久保留；分析状态只保留当前和上一个检查点（仅清理本项目 state 前缀生成的 .duckdb.gz），可从 raw 全量重建。旧 Paimon 和 JSONL 不自动删除。旧历史 manifest 不保证还能恢复已清理的分析检查点，但引用的 Parquet 保留。
+
+## ECS
 
 ```bash
-# 1. 安装依赖（uv 会自动创建 .venv 并装好运行时 + dev 依赖）
-uv sync
-
-# 2. 配置环境变量
-cp .env.example .env
-#    编辑 .env，填入 AUTH_TOKEN、OSS_WAREHOUSE、OSS_RAM_ROLE 等
-
-# 3. 运行
-uv run health-webhook
-# 或：uv run python -m health_webhook
+uv sync --frozen --no-dev
+uv run --no-sync health-webhook
+uv run --no-sync health-webhook-retry
 ```
 
-## 配置（.env）
+配置见 `.env.example`。部署文件预设新程序位于 `/var/lib/dsh/workspace/health-webhook-v2`，复用旧目录的 `.env`；改路径时同步调整 unit。使用 RAM 角色，无需把本地 AK 上传到 ECS。
 
-| 变量 | 说明 | 默认 |
-|------|------|------|
-| `AUTH_TOKEN` | webhook 访问令牌（Bearer） | 空（不校验） |
-| `OSS_WAREHOUSE` | Paimon 仓库 | `oss://your-bucket/paimon/health` |
-| `OSS_RAM_ROLE` | ECS 实例 RAM 角色名（免密） | 空 |
-| `OSS_ENDPOINT` | OSS 端点（内网） | `oss-cn-beijing-internal.aliyuncs.com` |
-| `OSS_REGION` | OSS 区域 | `cn-beijing` |
-| `OSS_ACCESS_KEY_ID` / `_SECRET` / `_TOKEN` | 可选显式凭证（优先于 RAM 角色） | 空 |
-| `DATA_DIR` | JSONL 兜底目录 | `/data` |
-| `LISTEN_HOST` / `LISTEN_PORT` | HTTP 监听 | `0.0.0.0:8080` |
-| `MAX_BODY_BYTES` | 单请求体上限 | 2 MiB |
+安装 `deploy/health-webhook.service` 与 `deploy/health-webhook-retry.service` 后启用服务，禁用旧 `health-webhook-sync.timer`。MemoryMax 分别为 256MiB 和 192MiB；原始输入上限 2MiB、同时上传最多 2 个。单台 ECS 宕机仍会导致入口暂时不可用。
 
-> 认证优先级：显式 `OSS_ACCESS_KEY_*` > ECS 实例 RAM 角色（元数据服务 STS，临期前 10 分钟自动刷新）。
-
-## API
-
-- `GET /health` —— 探活
-- `POST /ingest`（或 `POST /`）—— 接收 HealthKit 批量 JSON
+迁移旧 JSONL：
 
 ```bash
-curl -X POST https://health.bupt.site/ingest \
-  -H "Authorization: Bearer $AUTH_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "schemaVersion": "v1",
-    "batchId": "b1",
-    "deviceId": "dev1",
-    "batches": [
-      {
-        "hkTypeId": "HKQuantityTypeIdentifierHeartRate",
-        "samples": [
-          {"uuid": "h1", "startUnixMs": 1790084201021, "endUnixMs": 1790084201021,
-           "quantity": {"value": 74.0, "unit": "count/min"}}
-        ]
-      },
-      {
-        "hkTypeId": "HKCategoryTypeIdentifierSleepAnalysis",
-        "samples": [
-          {"uuid": "s1", "startUnixMs": 1790080000000, "endUnixMs": 1790083600000,
-           "category": {"value": 1, "valueName": "asleep"}}
-        ]
-      }
-    ]
-  }'
+uv run --no-sync health-webhook-migrate --source /path/to/events.jsonl
 ```
 
-## 数据模型
+迁移记录 byte boundary、SHA-256、原始行数和已上传凭据，逐批上传可续跑。切换后再跑一次捕获最后新增数据；验收前保留旧源文件。
 
-HealthKit 上百种类型统一建模成一张**窄表**（long table），按天分区：
+## 每日 CI
 
-```
-database: default
-table:    health_metrics
+`daily-report.yml` 每日 UTC 19:00（北京时间次日 03:00）运行，也可手动触发。GitHub 的 schedule 可能延迟，不作为实时保证。
 
-sample_uuid  STRING
-device_id    STRING
-metric_type  STRING    -- hkTypeId，如 HKQuantityTypeIdentifierHeartRate
-value        DOUBLE    -- quantity.value / category.value
-unit         STRING    -- count/min、kcal、m ...
-category     STRING    -- category.valueName，如 asleep / awake
-source_name  STRING    -- Apple Watch / iPhone
-start_time   TIMESTAMP
-end_time     TIMESTAMP
-received_at  TIMESTAMP
-dt           STRING    -- 分区键（北京时区日期）
+仓库 Secrets：`OSS_ACCESS_KEY_ID`、`OSS_ACCESS_KEY_SECRET`；Bucket 默认 zhigang-health，北京公网 endpoint。CI 只在私有 OSS 写分析结果/日报，不将健康记录写进公开日志、Actions artifacts、Pages 或 Git 提交。
+
+CI 从压缩 DuckDB 检查点恢复，只导入新增原始对象；当前版本会重新导出有效样本，但内容不变的分区复用旧 OSS 对象。不是全量重新下载原始文件。检查点和输出下载会产生 OSS 公网流量费。
+
+报表按前一日样本日期输出各指标样本数、数值型最小/最大/平均、数据质量及本次新增/删除事件数。数据包含补传，迟到样本在后续快照反映；报表不等同 Apple 健康跨设备去重总量，分类代码不求均值，不做健康诊断。
+
+## Windows 离线分析
+
+```powershell
+uv sync --frozen --group analysis
+uv run --no-sync health-webhook-offline pull --directory D:/HealthAnalysis --credentials-csv 'C:/path/to/AccessKey.csv'
 ```
 
-`quantity` 类型样本走 `value` + `unit`，`category` 类型样本走 `value` + `category`；
-`workout route` 等复杂类型不进入窄表，由 JSONL 兜底保留原始数据。
+也可通过进程环境变量提供 OSS_ACCESS_KEY_ID、OSS_ACCESS_KEY_SECRET、OSS_BUCKET 和 OSS_ENDPOINT。CSV 直接读取，不拷贝到代码仓库，不把 AK/SK 作为命令参数。
 
-## 开发
+用 DuckDB 打开下载目录的 `analysis.duckdb`：
+
+```sql
+SELECT metric_type, count(*)
+FROM health_metrics
+WHERE dt = DATE '2026-09-23'
+GROUP BY metric_type;
+
+SELECT sample_uuid, start_ms, payload->'workout' AS workout
+FROM workouts
+WHERE dt BETWEEN DATE '2026-09-01' AND DATE '2026-09-23';
+```
+
+需要自行生成新快照时，可在有发布权限的环境运行 `health-webhook-offline build --directory <work-directory>`。只允许一个发布者同时运行；CI 已通过 concurrency 串行化。Windows 通常只使用 pull，不与 CI 竞争发布。
+
+Windows 电脑关机不影响上传和每日 CI。Parquet 下载后可完全离线查询；再同步时只下载变化文件。
+
+## 开发验证
 
 ```bash
-uv run ruff format .        # 格式化
-uv run ruff check .         # lint
-uv run pyright              # 类型检查
-uv run pytest               # 单元测试
+uv sync --frozen --group analysis
+uv run pytest -q
+uv run ruff check .
 ```
-
-## 部署（systemd，无 Docker）
-
-```bash
-sudo cp deploy/health-webhook.service /etc/systemd/system/
-sudo systemctl daemon-reload
-sudo systemctl enable --now health-webhook
-```
-
-## 小文件合并（Compaction）
-
-pypaimon 直写**不会**自动合并小文件（每次提交产生一个新 parquet）。通过 GitHub Actions 定时跑 Spark 做归并：
-
-- 触发：每日 03:00（北京时间）+ 手动 `workflow_dispatch`
-- 实现：`scripts/compact_paimon.py`（PySpark + `CALL sys.compact`）
-
-需在 GitHub 仓库配置 3 个 Secrets：
-
-| Secret | 说明 |
-|--------|------|
-| `OSS_WAREHOUSE` | Paimon 仓库，如 `oss://zhigang-health/paimon/health` |
-| `OSS_ACCESS_KEY_ID` | OSS AccessKey ID（CI 不在 VPC，需一对 AK/SK） |
-| `OSS_ACCESS_KEY_SECRET` | OSS AccessKey Secret |
-
-## License
-
-[MIT](LICENSE)

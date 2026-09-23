@@ -1,69 +1,78 @@
-"""Flask 入口：health.bupt.site -> 健康看板 + JSONL/Paimon 双写。"""
+"""Compatible upload endpoint; acknowledge only after durable OSS storage."""
 
-from pathlib import Path
+import hmac
+import logging
+import threading
 
-from flask import Flask, jsonify, request, send_from_directory
-from pydantic import ValidationError
+from flask import Flask, jsonify, request
+from werkzeug.exceptions import RequestEntityTooLarge
 
-from health_webhook import dashboard, store
 from health_webhook.config import settings
-from health_webhook.models import HealthPayload
+from health_webhook.raw_store import OutboxFullError, inspect_payload, save, warmup
 
-WEB_DIR = Path(__file__).parent / "web"
-app = Flask(__name__, static_folder=str(WEB_DIR), static_url_path="/static")
+app = Flask(__name__, static_folder=None)
+app.config["MAX_CONTENT_LENGTH"] = settings.max_body_bytes
+_slots = threading.BoundedSemaphore(2)
+log = logging.getLogger(__name__)
 
 
 @app.get("/")
-def index():
-    return send_from_directory(WEB_DIR, "index.html")
-
-
 @app.get("/health")
 @app.get("/healthz")
 def health():
-    return jsonify(ok=True, service="health-webhook-paimon", warehouse=settings.oss_warehouse)
+    return jsonify(ok=True, service="health-webhook-oss", storage="oss")
 
 
-@app.get("/api/dashboard")
-def api_dashboard():
-    return jsonify(dashboard.dashboard_data())
+@app.errorhandler(RequestEntityTooLarge)
+def too_large(_exc):
+    return jsonify(ok=False, error="payload too large"), 413
 
 
 @app.post("/")
 @app.post("/ingest")
 def ingest():
-    if settings.auth_token and request.headers.get("Authorization", "") != (
-        f"Bearer {settings.auth_token}"
+    expected = f"Bearer {settings.auth_token}"
+    if settings.auth_token and not hmac.compare_digest(
+        request.headers.get("Authorization", "").encode(), expected.encode()
     ):
         return jsonify(ok=False, error="unauthorized"), 401
-
-    if (request.content_length or 0) > settings.max_body_bytes:
-        return jsonify(ok=False, error="payload too large"), 413
-
-    raw = request.get_data(cache=False)
-    if len(raw) > settings.max_body_bytes:
-        return jsonify(ok=False, error="payload too large"), 413
-
+    if not _slots.acquire(blocking=False):
+        return jsonify(ok=False, error="busy; retry later"), 503, {"Retry-After": "5"}
     try:
-        payload = HealthPayload.model_validate_json(raw)
-    except ValidationError:
-        return jsonify(ok=False, error="invalid json"), 400
-
-    try:
-        stats = store.save(raw.decode("utf-8", "replace"), payload)
-    except Exception as exc:  # JSONL 已落盘，仅 Paimon 失败
-        return jsonify(ok=False, error=f"paimon write failed: {exc}"), 502
-
-    return jsonify({"ok": True, **stats})
+        raw = request.get_data(cache=False)
+        try:
+            stats = inspect_payload(raw)
+        except (ValueError, TypeError, UnicodeError):
+            return jsonify(ok=False, error="invalid json"), 400
+        try:
+            receipt = save(raw)
+        except (OutboxFullError, OSError):
+            return jsonify(ok=False, error="local storage unavailable; retry later"), 503
+        except Exception as exc:
+            log.warning("OSS upload failed: %s", type(exc).__name__)
+            return (
+                jsonify(ok=False, error="OSS unavailable; retry later"),
+                503,
+                {"Retry-After": "10"},
+            )
+        return jsonify(ok=True, jsonl_saved=True, oss_saved=True, receipt_id=receipt, **stats)
+    finally:
+        _slots.release()
 
 
 def main() -> None:
     from waitress import serve
 
-    store.warmup()
+    warmup()
+    logging.basicConfig(level=logging.INFO)
     print(
-        f"health-webhook serving on {settings.listen_host}:{settings.listen_port} "
-        f"-> {settings.oss_warehouse}",
-        flush=True,
+        f"health-webhook OSS serving on {settings.listen_host}:{settings.listen_port}", flush=True
     )
-    serve(app, host=settings.listen_host, port=settings.listen_port)
+    serve(
+        app,
+        host=settings.listen_host,
+        port=settings.listen_port,
+        threads=4,
+        connection_limit=100,
+        max_request_body_size=settings.max_body_bytes,
+    )

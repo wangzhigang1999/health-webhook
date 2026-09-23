@@ -1,5 +1,5 @@
 [Unit]
-Description=Health webhook -> immutable raw batches on OSS
+Description=Retry pending health raw objects to OSS
 After=network-online.target
 Wants=network-online.target
 
@@ -7,11 +7,11 @@ Wants=network-online.target
 Type=simple
 WorkingDirectory=/var/lib/dsh/workspace/health-webhook-v2
 EnvironmentFile=/var/lib/dsh/workspace/health-webhook/.env
-ExecStart=/var/lib/dsh/workspace/health-webhook-v2/.venv/bin/python -m health_webhook
+ExecStart=/var/lib/dsh/workspace/health-webhook-v2/.venv/bin/python -m health_webhook.raw_store
 Restart=on-failure
-RestartSec=5
-MemoryMax=256M
-CPUQuota=100%
+RestartSec=10
+MemoryMax=192M
+CPUQuota=50%
 StandardOutput=journal
 StandardError=journal
 

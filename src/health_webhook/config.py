@@ -13,22 +13,23 @@ class Settings(BaseSettings):
     # 认证
     auth_token: str = ""
 
-    # JSONL 兜底落盘
+    # 有界待上传队列及历史 JSONL 迁移
     data_dir: str = "/data"
     max_body_bytes: int = 2 * 1024 * 1024
 
-    # OSS / Paimon
+    # OSS（OSS_WAREHOUSE 仅兼容旧配置中的 bucket 名称）
     oss_warehouse: str = "oss://your-bucket/paimon/health"
     oss_endpoint: str = "oss-cn-beijing-internal.aliyuncs.com"
     oss_region: str = "cn-beijing"
+    oss_bucket: str = ""
+    raw_prefix: str = "health/v2/raw/default"
+    outbox_max_bytes: int = 256 * 1024 * 1024
+    min_disk_free_bytes: int = 256 * 1024 * 1024
+    oss_timeout_seconds: float = 5
     oss_ram_role: str = ""
     oss_access_key_id: str = ""
     oss_access_key_secret: str = ""
     oss_access_key_token: str = ""
-
-    # Paimon 表
-    database: str = "default"
-    table_metrics: str = "health_metrics"
 
     # HTTP
     listen_host: str = "0.0.0.0"
@@ -37,6 +38,16 @@ class Settings(BaseSettings):
     @property
     def jsonl_path(self) -> Path:
         return Path(self.data_dir) / "events.jsonl"
+
+    @property
+    def bucket_name(self) -> str:
+        from urllib.parse import urlparse
+
+        return self.oss_bucket or urlparse(self.oss_warehouse).netloc
+
+    @property
+    def outbox_path(self) -> Path:
+        return Path(self.data_dir) / "outbox-v2"
 
     @property
     def oss_metadata_url(self) -> str:

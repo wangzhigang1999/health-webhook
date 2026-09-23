@@ -1,0 +1,29 @@
+name: Daily private health report
+on:
+  schedule:
+    - cron: '0 19 * * *'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: health-private-publisher
+  cancel-in-progress: false
+jobs:
+  report:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: '0.9.5'
+      - run: uv sync --frozen --group analysis --no-dev --python 3.12
+      - name: Incremental import, partitioned Parquet and private report
+        run: uv run --no-sync health-webhook-offline build --directory work/analysis
+        env:
+          OSS_BUCKET: zhigang-health
+          OSS_ENDPOINT: oss-cn-beijing.aliyuncs.com
+          OSS_ACCESS_KEY_ID: ${{ secrets.OSS_ACCESS_KEY_ID }}
+          OSS_ACCESS_KEY_SECRET: ${{ secrets.OSS_ACCESS_KEY_SECRET }}
+      - name: Safe public summary
+        run: echo 'Private OSS snapshot/report updated. No health data is published to GitHub.' >> "$GITHUB_STEP_SUMMARY"

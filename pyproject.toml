@@ -5,14 +5,15 @@ build-backend = "hatchling.build"
 [project]
 name = "health-webhook"
 version = "0.1.0"
-description = "Ingest Apple HealthKit data via webhook and write it to Apache Paimon on Alibaba Cloud OSS."
+description = "Archive HealthKit uploads on private OSS and build daily Parquet snapshots with DuckDB."
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
 authors = [{ name = "Zhigang Wang" }]
-keywords = ["healthkit", "paimon", "oss", "webhook", "lakehouse"]
+keywords = ["healthkit", "parquet", "oss", "webhook", "duckdb"]
 dependencies = [
-    "pypaimon[oss]==2.0.0",
+    "oss2>=2.19,<3",
+    "filelock>=3.16,<5",
     "flask>=3.0",
     "waitress>=3.0",
     "pydantic>=2.7",
@@ -20,6 +21,7 @@ dependencies = [
 ]
 
 [dependency-groups]
+analysis = ["duckdb>=1.4,<2"]
 dev = [
     "pytest>=8.0",
     "ruff>=0.6",
@@ -28,8 +30,9 @@ dev = [
 
 [project.scripts]
 health-webhook = "health_webhook.app:main"
-health-webhook-backfill = "health_webhook.backfill:main"
-health-webhook-analyze = "health_webhook.analyze:main"
+health-webhook-retry = "health_webhook.raw_store:main"
+health-webhook-migrate = "health_webhook.migrate_raw:main"
+health-webhook-offline = "health_webhook.offline:main"
 
 [project.urls]
 Homepage = "https://github.com/wangzhigang1999/health-webhook"

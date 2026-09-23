@@ -16,6 +16,10 @@ build/
 # 运行时数据
 *.jsonl
 data/
+work/
+*.duckdb*
+*.parquet
+*.sqlite3
 
 # 工具缓存
 .pytest_cache/
