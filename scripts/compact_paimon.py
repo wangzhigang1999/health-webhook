@@ -62,8 +62,10 @@ def main() -> None:
         # `CALL sys.*` 需要把当前 catalog 切到 paimon，否则会解析到 spark_catalog 报错
         spark.catalog.setCurrentCatalog("paimon")
 
-        files_table = f"paimon.{table}`$files`"
-        snaps_table = f"paimon.{table}`$snapshots`"
+        db, tbl = table.split(".", 1)
+        # 系统表名要整个用反引号包住，否则 `$files` 会被当成别名
+        files_table = f"paimon.{db}.`{tbl}$files`"
+        snaps_table = f"paimon.{db}.`{tbl}$snapshots`"
 
         _count(spark, "compact 前 snapshot 数", f"SELECT count(*) FROM {snaps_table}")
         _count(spark, "compact 前 文件数", f"SELECT count(*) FROM {files_table}")
