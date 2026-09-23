@@ -119,6 +119,8 @@ def upload_staged(digest: str, target=None) -> None:
     target = target or bucket()
     key = key_for(digest)
     if content is not None:
+        if meta is None:
+            raise ValueError("missing outbox metadata")
         if hashlib.sha256(gzip.decompress(content)).hexdigest() != digest:
             raise ValueError("outbox checksum mismatch")
         headers = {

@@ -55,6 +55,8 @@ ignore = ["RUF001", "RUF002", "RUF003"]
 quote-style = "double"
 
 [tool.pyright]
+venvPath = "."
+venv = ".venv"
 pythonVersion = "3.11"
 typeCheckingMode = "basic"
 include = ["src", "tests"]

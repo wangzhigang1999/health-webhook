@@ -258,7 +258,7 @@ def restore_state(bucket, state, work, dbpath):
     if state.get("format") != "parquet-v1":
         checkpoint = work / "checkpoint.duckdb.gz"
         download_checked(bucket, state, checkpoint)
-        with gzip.open(checkpoint, "rb") as src, temporary.open("wb") as dst:
+        with gzip.GzipFile(filename=checkpoint, mode="rb") as src, temporary.open("wb") as dst:
             shutil.copyfileobj(src, dst)
     else:
 
@@ -334,8 +334,8 @@ def build(args):
             print("Restoring private analysis checkpoint.", flush=True)
             restore_state(bucket, previous["state"], work, dbpath)
         db = initialize(dbpath)
-        before_samples = db.execute("SELECT count(*) FROM sample_events").fetchone()[0]
-        before_deletions = db.execute("SELECT count(*) FROM deletion_events").fetchone()[0]
+        before_samples = db.execute("SELECT count(*) FROM sample_events").fetchall()[0][0]
+        before_deletions = db.execute("SELECT count(*) FROM deletion_events").fetchall()[0][0]
         new_objects = 0
         for item in oss2.ObjectIteratorV2(bucket, prefix=f"{ROOT}/raw/default/"):
             key = item.key
@@ -408,7 +408,7 @@ def build(args):
                     "invalid_samples",
                 ],
                 [
-                    db.execute(sql).fetchone()[0]
+                    db.execute(sql).fetchall()[0][0]
                     for sql in (
                         "SELECT count(*) FROM ingest_objects WHERE NOT is_test",
                         "SELECT count(*) FROM sample_events",

@@ -93,7 +93,9 @@ def test_endpoint_compatibility_auth_failure_and_no_dashboard(monkeypatch):
     for route in ("/", "/ingest"):
         result = client.post(route, data=body([sample()]), headers=headers)
         assert result.status_code == 200
-        assert result.json["total_rows"] == 1 and result.json["oss_saved"]
+        payload = result.json
+        assert payload is not None
+        assert payload["total_rows"] == 1 and payload["oss_saved"]
     assert client.get("/api/dashboard").status_code == 404
     assert client.get("/static/app.js").status_code == 404
 
@@ -111,10 +113,10 @@ def test_deleted_before_add_duplicate_workout_and_conflict(tmp_path):
     try:
         ingest(db, "delete-first", body(deleted=["a"]))
         ingest(db, "add-later", body([sample()]))
-        assert db.execute("SELECT count(*) FROM samples_current").fetchone()[0] == 0
+        assert db.execute("SELECT count(*) FROM samples_current").fetchall()[0][0] == 0
         assert not ingest(db, "add-later", body([sample()]))
         ingest(db, "repeat", body([sample()]))
-        assert db.execute("SELECT count(*) FROM sample_events").fetchone()[0] == 1
+        assert db.execute("SELECT count(*) FROM sample_events").fetchall()[0][0] == 1
         w = {
             "uuid": "w",
             "startUnixMs": 1790170983174,
@@ -122,10 +124,10 @@ def test_deleted_before_add_duplicate_workout_and_conflict(tmp_path):
             "workout": {"durationSeconds": 100, "events": []},
         }
         ingest(db, "workout", body([w, sample("b")]))
-        assert db.execute("SELECT count(*) FROM workouts").fetchone()[0] == 1
+        assert db.execute("SELECT count(*) FROM workouts").fetchall()[0][0] == 1
         ingest(db, "conflict", body([sample("b", 99)]))
-        assert db.execute("SELECT count(*) FROM sample_conflicts").fetchone()[0] == 1
-        assert db.execute("SELECT count(*) FROM samples_current").fetchone()[0] == 1
+        assert db.execute("SELECT count(*) FROM sample_conflicts").fetchall()[0][0] == 1
+        assert db.execute("SELECT count(*) FROM samples_current").fetchall()[0][0] == 1
     finally:
         db.close()
 
@@ -138,7 +140,7 @@ def test_full_batch_has_bounded_json_parse_memory(tmp_path):
         item["source"] = {"name": "Synthetic watch " * 20, "bundleId": "com.example.health"}
     try:
         ingest(db, "full-batch", body(items))
-        assert db.execute("SELECT count(*) FROM samples_current").fetchone()[0] == 2000
+        assert db.execute("SELECT count(*) FROM samples_current").fetchall()[0][0] == 2000
     finally:
         db.close()
 
@@ -228,17 +230,20 @@ def test_publish_pull_and_incremental_restore(tmp_path, monkeypatch):
     args = SimpleNamespace(directory=tmp_path / "builder", credentials_csv=None)
     offline.build(args)
     manifest = offline.load_latest(target)
+    assert manifest is not None
     assert manifest["quality"]["active_samples"] == 1
     assert manifest["quality"]["invalid_samples"] == 1
     assert len(manifest["files"]) == 1
     offline.pull(SimpleNamespace(directory=tmp_path / "reader", credentials_csv=None))
     db = duckdb.connect(str(tmp_path / "reader" / "analysis.duckdb"))
-    assert db.execute("SELECT count(*) FROM samples").fetchone()[0] == 1
+    assert db.execute("SELECT count(*) FROM samples").fetchall()[0][0] == 1
     db.close()
-    # Simulate a fresh CI runner loading a private compressed checkpoint.
+    # Simulate a fresh CI runner loading a private columnar checkpoint.
     offline.build(SimpleNamespace(directory=tmp_path / "fresh-ci", credentials_csv=None))
-    assert offline.load_latest(target)["quality"]["active_samples"] == 1
-    assert offline.load_latest(target)["state"] == manifest["state"]
+    restored_manifest = offline.load_latest(target)
+    assert restored_manifest is not None
+    assert restored_manifest["quality"]["active_samples"] == 1
+    assert restored_manifest["state"] == manifest["state"]
     # A deletion-only snapshot must replace existing reader views with an empty schema.
     raw_delete = body(deleted=["a"])
     delete_key = (
@@ -248,6 +253,6 @@ def test_publish_pull_and_incremental_restore(tmp_path, monkeypatch):
     offline.build(SimpleNamespace(directory=tmp_path / "empty-ci", credentials_csv=None))
     offline.pull(SimpleNamespace(directory=tmp_path / "reader", credentials_csv=None))
     db = duckdb.connect(str(tmp_path / "reader" / "analysis.duckdb"))
-    assert db.execute("SELECT count(*) FROM samples").fetchone()[0] == 0
-    assert db.execute("SELECT count(*) FROM workouts").fetchone()[0] == 0
+    assert db.execute("SELECT count(*) FROM samples").fetchall()[0][0] == 0
+    assert db.execute("SELECT count(*) FROM workouts").fetchall()[0][0] == 0
     db.close()

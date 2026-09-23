@@ -90,6 +90,8 @@ Windows 电脑关机不影响上传和每日 CI。Parquet 下载后可完全离�
 
 ```bash
 uv sync --frozen --group analysis
-uv run pytest -q
-uv run ruff check .
+uv run --no-sync ruff check .
+uv run --no-sync ruff format --check .
+uv run --no-sync pyright
+uv run --no-sync pytest -q
 ```
