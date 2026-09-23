@@ -261,6 +261,14 @@ def restore_state(bucket, state, work, dbpath):
         with gzip.open(checkpoint, "rb") as src, temporary.open("wb") as dst:
             shutil.copyfileobj(src, dst)
     else:
+
+        def fetch(item):
+            local = work / "checkpoint" / (item["sha256"] + ".parquet")
+            download_checked(bucket, item, local)
+
+        # Checkpoints contain many small daily objects; overlap network round trips.
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            list(pool.map(fetch, state["files"]))
         restored = initialize(temporary)
         try:
             for table in ("sample_events", "deletion_events", "ingest_objects"):
@@ -268,7 +276,6 @@ def restore_state(bucket, state, work, dbpath):
                     if item["table"] != table:
                         continue
                     local = work / "checkpoint" / (item["sha256"] + ".parquet")
-                    download_checked(bucket, item, local)
                     restored.execute(
                         f"INSERT INTO {table} BY NAME "
                         "SELECT * FROM read_parquet(?, hive_partitioning=false)",
