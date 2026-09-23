@@ -1,0 +1,9 @@
+[Unit]
+Description=Hourly Paimon sync for health-webhook
+
+[Timer]
+OnCalendar=hourly
+Persistent=true
+
+[Install]
+WantedBy=timers.target

@@ -1,9 +1,9 @@
-"""JSONL + Paimon 双写编排。"""
+"""JSONL 本地落盘（Paimon 由定时同步任务批量导入）。"""
 
 import os
 import threading
 
-from health_webhook import healthkit, paimon_store
+from health_webhook import healthkit
 from health_webhook.config import settings
 from health_webhook.models import HealthPayload
 
@@ -21,13 +21,17 @@ def _append_jsonl(raw: str) -> None:
 
 
 def save(raw_json: str, payload: HealthPayload) -> dict[str, int | bool]:
-    """双写一条 webhook 数据：先 JSONL 兜底，再 Paimon 湖表。"""
+    """写一条 webhook 数据到本地 JSONL。
+
+    Paimon 不在此实时写入，由 ``health-webhook-backfill`` 定时批量同步，
+    避免每条 POST 都触发 OSS 提交（随 snapshot 增多越来越慢）。
+    """
     rows = healthkit.flatten(payload)
     with _lock:
         _append_jsonl(raw_json)
-        written = paimon_store.write(rows)
-    return {"jsonl_saved": True, "total_rows": len(rows), "paimon_rows": written}
+    return {"jsonl_saved": True, "total_rows": len(rows)}
 
 
 def warmup() -> None:
-    paimon_store.warmup()
+    """本地落盘无需 OSS warmup；仅确保数据目录存在。"""
+    settings.jsonl_path.parent.mkdir(parents=True, exist_ok=True)
