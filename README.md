@@ -21,12 +21,14 @@ health/v2/manifests/<generation>.json
 health/v2/manifests/latest.json
 health/v2/reports/date=YYYY-MM-DD/<generation>.md
 health/v2/reports/date=YYYY-MM-DD/<generation>.json
-health/v2/state/<generation>.duckdb.gz
+health/v2/state/events/dt=YYYY-MM-DD/<sha256>.parquet
+health/v2/state/deletion_events/<sha256>.parquet
+health/v2/state/ingest_objects/<sha256>.parquet
 ```
 
 所有对象保持私有。分区日期取样本开始时间（北京时间），不是上传日期。清单发布成功才切换最新版本；不要 glob OSS 下所有 Parquet，因为旧版本可能仍保留。Windows 下载器只读取清单引用的文件。
 
-raw 永久保留；分析状态只保留当前和上一个检查点（仅清理本项目 state 前缀生成的 .duckdb.gz），可从 raw 全量重建。旧 Paimon 和 JSONL 不自动删除。旧历史 manifest 不保证还能恢复已清理的分析检查点，但引用的 Parquet 保留。
+raw 永久保留；分析状态只保留当前和上一个检查点引用的文件（仅清理本项目 state 下生成的文件），可从 raw 全量重建。旧 Paimon 和 JSONL 不自动删除。旧历史 manifest 不保证还能恢复已清理的分析检查点，但供分析使用的 Parquet 保留。
 
 ## ECS
 
@@ -54,7 +56,7 @@ uv run --no-sync health-webhook-migrate --source /path/to/events.jsonl
 
 仓库 Secrets：`OSS_ACCESS_KEY_ID`、`OSS_ACCESS_KEY_SECRET`；Bucket 默认 zhigang-health，北京公网 endpoint。CI 只在私有 OSS 写分析结果/日报，不将健康记录写进公开日志、Actions artifacts、Pages 或 Git 提交。
 
-CI 从压缩 DuckDB 检查点恢复，只导入新增原始对象；当前版本会重新导出有效样本，但内容不变的分区复用旧 OSS 对象。不是全量重新下载原始文件。大文件使用有界并行分片上传；最终提交仍禁止覆盖。检查点和输出下载会产生 OSS 公网流量费。
+CI 从分区 Parquet 检查点恢复 DuckDB，只导入新增原始对象；当前版本会重新导出有效样本，但内容不变的分区复用旧 OSS 对象。分析状态也按天保存，包含全部样本版本、删除事件和已导入对象；只上传变化的状态分区，不每天回传整个 DuckDB 文件。大文件使用有界并行分片上传；最终提交仍禁止覆盖。检查点和输出下载会产生 OSS 公网流量费。
 
 报表按前一日样本日期输出各指标样本数、数值型最小/最大/平均、数据质量及本次新增/删除事件数。数据包含补传，迟到样本在后续快照反映；报表不等同 Apple 健康跨设备去重总量，分类代码不求均值，不做健康诊断。
 

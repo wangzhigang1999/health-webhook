@@ -216,7 +216,7 @@ def test_publish_pull_and_incremental_restore(tmp_path, monkeypatch):
             del self.files[key]
 
     target = MemoryBucket()
-    raw = body([sample()])
+    raw = body([sample(), {**sample("invalid"), "startUnixMs": "invalid"}])
     key = offline.ROOT + "/raw/default/aa/" + hashlib.sha256(raw).hexdigest() + ".json.gz"
     target.files[key] = gzip.compress(raw)
     monkeypatch.setattr(offline, "connect_bucket", lambda _: target)
@@ -229,6 +229,7 @@ def test_publish_pull_and_incremental_restore(tmp_path, monkeypatch):
     offline.build(args)
     manifest = offline.load_latest(target)
     assert manifest["quality"]["active_samples"] == 1
+    assert manifest["quality"]["invalid_samples"] == 1
     assert len(manifest["files"]) == 1
     offline.pull(SimpleNamespace(directory=tmp_path / "reader", credentials_csv=None))
     db = duckdb.connect(str(tmp_path / "reader" / "analysis.duckdb"))
@@ -237,6 +238,7 @@ def test_publish_pull_and_incremental_restore(tmp_path, monkeypatch):
     # Simulate a fresh CI runner loading a private compressed checkpoint.
     offline.build(SimpleNamespace(directory=tmp_path / "fresh-ci", credentials_csv=None))
     assert offline.load_latest(target)["quality"]["active_samples"] == 1
+    assert offline.load_latest(target)["state"] == manifest["state"]
     # A deletion-only snapshot must replace existing reader views with an empty schema.
     raw_delete = body(deleted=["a"])
     delete_key = (

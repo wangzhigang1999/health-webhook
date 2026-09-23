@@ -245,6 +245,77 @@ def load_latest(bucket):
         return None
 
 
+def state_files(state):
+    if state.get("format") == "parquet-v1":
+        return state["files"]
+    return [state]
+
+
+def restore_state(bucket, state, work, dbpath):
+    temporary = dbpath.with_suffix(".restore")
+    temporary.unlink(missing_ok=True)
+    Path(str(temporary) + ".wal").unlink(missing_ok=True)
+    if state.get("format") != "parquet-v1":
+        checkpoint = work / "checkpoint.duckdb.gz"
+        download_checked(bucket, state, checkpoint)
+        with gzip.open(checkpoint, "rb") as src, temporary.open("wb") as dst:
+            shutil.copyfileobj(src, dst)
+    else:
+        restored = initialize(temporary)
+        try:
+            for table in ("sample_events", "deletion_events", "ingest_objects"):
+                for item in state["files"]:
+                    if item["table"] != table:
+                        continue
+                    local = work / "checkpoint" / (item["sha256"] + ".parquet")
+                    download_checked(bucket, item, local)
+                    restored.execute(
+                        f"INSERT INTO {table} BY NAME "
+                        "SELECT * FROM read_parquet(?, hive_partitioning=false)",
+                        [str(local)],
+                    )
+            restored.execute("CHECKPOINT")
+        finally:
+            restored.close()
+    os.replace(temporary, dbpath)
+
+
+def publish_state(db, bucket, export, previous):
+    """Columnar checkpoints reuse unchanged days instead of uploading a full database."""
+    old_files = {item["key"]: item for item in state_files(previous)} if previous else {}
+    files = []
+    folder = export / "checkpoint"
+    folder.mkdir()
+    days = db.execute("SELECT DISTINCT dt FROM sample_events ORDER BY dt").fetchall()
+    for (day,) in days:
+        label = str(day) if day is not None else "unknown"
+        path = folder / f"events-{label}.parquet"
+        target = str(path).replace("'", "''")
+        db.execute(
+            "COPY (SELECT * FROM sample_events WHERE dt IS NOT DISTINCT FROM ? "
+            "ORDER BY metric_type,start_ms,sample_uuid,version_hash) "
+            f"TO '{target}' (FORMAT PARQUET, COMPRESSION ZSTD, ROW_GROUP_SIZE 16384)",
+            [day],
+        )
+        key = f"{ROOT}/state/events/dt={label}/{sha_file(path)}.parquet"
+        info = old_files.get(key) or put_file(bucket, key, path)
+        files.append({**info, "table": "sample_events"})
+    for table, order in (
+        ("deletion_events", "sample_uuid,metric_type,object_key"),
+        ("ingest_objects", "object_key"),
+    ):
+        path = folder / f"{table}.parquet"
+        db.execute(
+            f"COPY (SELECT * FROM {table} ORDER BY {order}) "
+            "TO ? (FORMAT PARQUET, COMPRESSION ZSTD)",
+            [str(path)],
+        )
+        key = f"{ROOT}/state/{table}/{sha_file(path)}.parquet"
+        info = old_files.get(key) or put_file(bucket, key, path)
+        files.append({**info, "table": table})
+    return {"format": "parquet-v1", "files": files}
+
+
 def build(args):
     bucket = connect_bucket(args.credentials_csv)
     work = args.directory.resolve()
@@ -254,12 +325,7 @@ def build(args):
         dbpath = work / "health.duckdb"
         if not dbpath.exists() and previous and previous.get("state"):
             print("Restoring private analysis checkpoint.", flush=True)
-            checkpoint = work / "checkpoint.duckdb.gz"
-            download_checked(bucket, previous["state"], checkpoint)
-            temporary = dbpath.with_suffix(".part")
-            with gzip.open(checkpoint, "rb") as src, temporary.open("wb") as dst:
-                shutil.copyfileobj(src, dst)
-            os.replace(temporary, dbpath)
+            restore_state(bucket, previous["state"], work, dbpath)
         db = initialize(dbpath)
         before_samples = db.execute("SELECT count(*) FROM sample_events").fetchone()[0]
         before_deletions = db.execute("SELECT count(*) FROM deletion_events").fetchone()[0]
@@ -410,15 +476,13 @@ def build(args):
         report_info = put_file(
             bucket, f"{ROOT}/reports/date={report_day}/{generation}.md", markdown_path
         )
+        print("Publishing changed columnar checkpoint partitions.", flush=True)
+        if previous and previous["state"].get("format") == "parquet-v1" and not new_objects:
+            state = previous["state"]
+        else:
+            state = publish_state(db, bucket, export, previous.get("state") if previous else None)
         db.execute("CHECKPOINT")
         db.close()
-        # State is a private checkpoint, not a concurrently writable remote database.
-        state_path = export / "state.duckdb.gz"
-        print("Compressing private analysis checkpoint.", flush=True)
-        with dbpath.open("rb") as src, gzip.open(state_path, "wb", compresslevel=1) as dst:
-            shutil.copyfileobj(src, dst)
-        print("Publishing private checkpoint with bounded multipart transfers.", flush=True)
-        state = put_file(bucket, f"{ROOT}/state/{generation}.duckdb.gz", state_path)
         manifest = {
             "schema_version": 1,
             "parser_version": PARSER_VERSION,
@@ -435,11 +499,18 @@ def build(args):
         put_file(bucket, f"{ROOT}/manifests/{generation}.json", manifest_path)
         put_file(bucket, f"{ROOT}/manifests/latest.json", manifest_path, immutable=False)
         # Only our rebuildable checkpoints; retain current + previous, never delete raw/Parquet.
-        keep_states = {state["key"]}
+        keep_states = {item["key"] for item in state_files(state)}
         if previous and previous.get("state"):
-            keep_states.add(previous["state"]["key"])
+            keep_states.update(item["key"] for item in state_files(previous["state"]))
         for item in oss2.ObjectIteratorV2(bucket, prefix=f"{ROOT}/state/"):
-            if item.key.endswith(".duckdb.gz") and item.key not in keep_states:
+            managed = item.key.endswith(".duckdb.gz") or (
+                item.key.endswith(".parquet")
+                and any(
+                    item.key.startswith(f"{ROOT}/state/{table}/")
+                    for table in ("events", "deletion_events", "ingest_objects")
+                )
+            )
+            if managed and item.key not in keep_states:
                 bucket.delete_object(item.key)
         print(
             "Private Parquet snapshot and daily report published; manifest committed.", flush=True
