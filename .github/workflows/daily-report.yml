@@ -18,7 +18,7 @@ jobs:
         with:
           version: '0.9.5'
       - run: uv sync --frozen --group analysis --no-dev --python 3.12
-      - name: Incremental import, partitioned Parquet and private report
+      - name: Incremental import, partitioned Parquet and private HTML health brief
         run: uv run --no-sync health-webhook-offline build --directory work/analysis
         env:
           OSS_BUCKET: zhigang-health

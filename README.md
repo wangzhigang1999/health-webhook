@@ -19,7 +19,7 @@ health/v2/raw/default/<hash-prefix>/<sha256>.json.gz
 health/v2/parquet/samples/dt=YYYY-MM-DD/<sha256>.parquet
 health/v2/manifests/<generation>.json
 health/v2/manifests/latest.json
-health/v2/reports/date=YYYY-MM-DD/<generation>.md
+health/v2/reports/date=YYYY-MM-DD/<generation>.html
 health/v2/reports/date=YYYY-MM-DD/<generation>.json
 health/v2/state/events/dt=YYYY-MM-DD/<sha256>.parquet
 health/v2/state/deletion_events/<sha256>.parquet
@@ -58,7 +58,7 @@ uv run --no-sync health-webhook-migrate --source /path/to/events.jsonl
 
 CI 从分区 Parquet 检查点恢复 DuckDB，只导入新增原始对象；当前版本会重新导出有效样本，但内容不变的分区复用旧 OSS 对象。分析状态也按天保存，包含全部样本版本、删除事件和已导入对象；只上传变化的状态分区，不每天回传整个 DuckDB 文件。大文件使用有界并行分片上传；最终提交仍禁止覆盖。检查点和输出下载会产生 OSS 公网流量费。
 
-报表按前一日样本日期输出各指标样本数、数值型最小/最大/平均、数据质量及本次新增/删除事件数。数据包含补传，迟到样本在后续快照反映；报表不等同 Apple 健康跨设备去重总量，分类代码不求均值，不做健康诊断。
+报表按北京时间前一日生成独立 HTML 健康简报，内嵌 Tailwind、Font Awesome 和 Chart.js，离线可读。内容包括入睡/醒来、睡眠分期和近期作息图、活动、静息心率与 HRV、夜间心率/呼吸/血氧及前 7 日个人基线。缺失不填零，同一手表来源比较，运动重叠合并，睡眠归入醒来日期；数据局限随报告显示。JSON 保存对应指标与趋势供复盘，技术计数保留在私有 manifest。03:00 生成前一完整日期的报告，补传会反映在后续快照中；不作健康诊断。Windows pull 同步后打开 `latest-report.html`。体重为独立链路，不把 HealthKit 中缺失解释为未称重。
 
 ## Windows 离线分析
 

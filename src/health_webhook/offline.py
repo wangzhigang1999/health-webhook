@@ -18,6 +18,8 @@ import duckdb
 import oss2
 from filelock import FileLock
 
+from health_webhook.brief import collect, render
+
 ROOT = "health/v2"
 PARSER_VERSION = 1
 
@@ -334,8 +336,6 @@ def build(args):
             print("Restoring private analysis checkpoint.", flush=True)
             restore_state(bucket, previous["state"], work, dbpath)
         db = initialize(dbpath)
-        before_samples = db.execute("SELECT count(*) FROM sample_events").fetchall()[0][0]
-        before_deletions = db.execute("SELECT count(*) FROM deletion_events").fetchall()[0][0]
         new_objects = 0
         for item in oss2.ObjectIteratorV2(bucket, prefix=f"{ROOT}/raw/default/"):
             key = item.key
@@ -385,17 +385,6 @@ def build(args):
             info = previous_files.get(key) or put_file(bucket, key, file)
             files.append({**info, "dt": str(day)})
         report_day = (now + timedelta(hours=8) - timedelta(days=1)).date()
-        metrics = db.execute(
-            """
-            SELECT metric_type,kind,unit,count(*) AS samples,
-                   min(value) FILTER (WHERE kind='quantity'),
-                   max(value) FILTER (WHERE kind='quantity'),
-                   avg(value) FILTER (WHERE kind='quantity')
-            FROM current_export WHERE dt=?
-            GROUP BY metric_type,kind,unit ORDER BY metric_type
-        """,
-            [report_day],
-        ).fetchall()
         quality = dict(
             zip(
                 [
@@ -423,65 +412,17 @@ def build(args):
                 strict=True,
             )
         )
-        report = {
-            "schema_version": 1,
-            "generated_at": now.isoformat(),
-            "sample_date": str(report_day),
-            "new_raw_objects": new_objects,
-            "new_sample_versions": quality["sample_versions"] - before_samples,
-            "new_deletion_events": quality["deletion_events"] - before_deletions,
-            "quality": quality,
-            "metrics": [
-                dict(
-                    zip(
-                        ["metric_type", "kind", "unit", "samples", "min", "max", "mean"],
-                        row,
-                        strict=True,
-                    )
-                )
-                for row in metrics
-            ],
-            "note": "Descriptive sample statistics, not Apple Health totals. "
-            "Units and sources may differ; no diagnosis.",
-        }
+        report = collect(db, report_day)
+        report["generated_at"] = now.isoformat()
         report_path = export / "report.json"
         report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
         report_json = put_file(
             bucket, f"{ROOT}/reports/date={report_day}/{generation}.json", report_path
         )
-        markdown = [
-            f"# 健康数据日报 · {report_day}",
-            "",
-            f"生成时间（UTC）：{now.isoformat()}",
-            "",
-            f"本次新增批次：{new_objects}；新增样本版本：{report['new_sample_versions']}；"
-            f"新增删除事件：{report['new_deletion_events']}。",
-            "",
-            f"当前有效样本：{quality['active_samples']}；冲突 UUID："
-            f"{quality['conflicted_uuids']}；无效样本：{quality['invalid_samples']}。",
-            "",
-            "下表按北京时间的样本开始日期统计；不是接收日期。",
-            "",
-            "| 指标 | 类型 | 单位 | 样本数 | 最小 | 最大 | 平均 |",
-            "|---|---|---|---:|---:|---:|---:|",
-        ]
-        for row in metrics:
-            cells = [
-                "—" if v is None else (f"{v:.2f}" if isinstance(v, float) else str(v)) for v in row
-            ]
-            markdown.append("| " + " | ".join(v.replace("|", "\\|") for v in cells) + " |")
-        markdown.extend(
-            [
-                "",
-                "这是样本描述统计，不是 Apple 健康的跨设备合并总量。"
-                "分类和运动只统计数量；不对分类代码求均值。",
-                "",
-            ]
-        )
-        markdown_path = export / "report.md"
-        markdown_path.write_text("\n".join(markdown), encoding="utf-8")
+        html_path = export / "report.html"
+        html_path.write_text(render(report), encoding="utf-8")
         report_info = put_file(
-            bucket, f"{ROOT}/reports/date={report_day}/{generation}.md", markdown_path
+            bucket, f"{ROOT}/reports/date={report_day}/{generation}.html", html_path
         )
         print("Publishing changed columnar checkpoint partitions.", flush=True)
         if previous and previous["state"].get("format") == "parquet-v1" and not new_objects:
@@ -536,8 +477,10 @@ def pull(args):
         path = work / "parquet" / ("dt=" + item["dt"]) / Path(item["key"]).name
         download_checked(bucket, item, path)
         paths.append(str(path).replace("\\", "/"))
-    report_path = work / "reports" / (manifest["generation"] + ".md")
+    extension = Path(manifest["report"]["key"]).suffix
+    report_path = work / "reports" / (manifest["generation"] + extension)
     download_checked(bucket, manifest["report"], report_path)
+    shutil.copyfile(report_path, work / ("latest-report" + extension))
     db = duckdb.connect(str(work / "analysis.duckdb"))
     db.execute("BEGIN")
     if paths:
