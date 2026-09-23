@@ -74,9 +74,9 @@ def main() -> None:
         spark.sql(f"CALL sys.compact(table => '{table}', compact_strategy => 'full')")
         print("full compaction 完成", flush=True)
 
-        print("过期旧 snapshot（保留 3 个）...", flush=True)
+        print("过期旧 snapshot（保留 10 个）...", flush=True)
         spark.sql(
-            f"CALL sys.expire_snapshots(table => '{table}', retain_max => 3, max_deletes => 1000)"
+            f"CALL sys.expire_snapshots(table => '{table}', retain_max => 10, max_deletes => 1000)"
         )
         print("snapshot 过期完成", flush=True)
 
