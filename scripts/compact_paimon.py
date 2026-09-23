@@ -2,6 +2,8 @@
 
 在 CI（GitHub Actions）中运行，避免占用 ECS 内存。
 OSS 走公网端点（CI runner 不在 VPC 内，无法访问 -internal）。
+
+流程：full compaction 合并小文件 -> 过期旧 snapshot（连带删除旧数据文件）。
 """
 
 import os
@@ -10,6 +12,17 @@ from pyspark.sql import SparkSession
 
 # spark connector 的 fat jar 不包含 OSS 文件系统实现，需额外加 paimon-oss
 PAIMON_PACKAGE = "org.apache.paimon:paimon-spark-3.5_2.12:2.0.0,org.apache.paimon:paimon-oss:2.0.0"
+
+
+def _count(spark: SparkSession, label: str, sql: str) -> int | None:
+    """执行 count 查询并打印结果；查询失败不中断主流程。"""
+    try:
+        value = spark.sql(sql).collect()[0][0]
+        print(f"[{label}] {value}", flush=True)
+        return int(value)
+    except Exception as exc:  # 系统表查询失败不影响 compaction 本身
+        print(f"[{label}] 查询失败: {exc}", flush=True)
+        return None
 
 
 def main() -> None:
@@ -48,12 +61,29 @@ def main() -> None:
     try:
         # `CALL sys.*` 需要把当前 catalog 切到 paimon，否则会解析到 spark_catalog 报错
         spark.catalog.setCurrentCatalog("paimon")
+
+        files_table = f"paimon.{table}`$files`"
+        snaps_table = f"paimon.{table}`$snapshots`"
+
+        _count(spark, "compact 前 snapshot 数", f"SELECT count(*) FROM {snaps_table}")
+        _count(spark, "compact 前 文件数", f"SELECT count(*) FROM {files_table}")
+
+        print("开始 full compaction ...", flush=True)
         spark.sql(f"CALL sys.compact(table => '{table}', compact_strategy => 'full')")
-        spark.sql(f"CALL sys.expire_snapshots(table => '{table}', retain_max => 30)")
+        print("full compaction 完成", flush=True)
+
+        print("过期旧 snapshot（保留 3 个）...", flush=True)
+        spark.sql(
+            f"CALL sys.expire_snapshots(table => '{table}', retain_max => 3, max_deletes => 1000)"
+        )
+        print("snapshot 过期完成", flush=True)
+
+        _count(spark, "compact 后 snapshot 数", f"SELECT count(*) FROM {snaps_table}")
+        _count(spark, "compact 后 文件数", f"SELECT count(*) FROM {files_table}")
     finally:
         spark.stop()
 
-    print(f"compaction finished: {table}")
+    print(f"compaction finished: {table}", flush=True)
 
 
 if __name__ == "__main__":
