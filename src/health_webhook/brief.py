@@ -16,12 +16,12 @@ ASLEEP = {"asleep", "asleepUnspecified", "asleepCore", "asleepDeep", "asleepREM"
 ADDITIVE = {"StepCount", "AppleExerciseTime", "ActiveEnergyBurned"}
 
 
-def collect_weight(db, day, table):
+def collect_weight(db, day, table, cutoff_ms):
     rows = db.execute(
         f"SELECT start_ms,value,json_extract_string(payload,'$.iot.assignment') FROM {table} "
         "WHERE metric_type='HKQuantityTypeIdentifierBodyMass' AND source_bundle=? "
-        "AND unit='kg' AND dt BETWEEN ? AND ? ORDER BY start_ms",
-        [WEIGHT_SOURCE, day - timedelta(days=35), day],
+        "AND unit='kg' AND dt BETWEEN ? AND ? AND start_ms<=? ORDER BY start_ms",
+        [WEIGHT_SOURCE, day - timedelta(days=35), day, cutoff_ms],
     ).fetchall()
     daily = defaultdict(list)
     for ms, value, _assignment in rows:
@@ -32,8 +32,8 @@ def collect_weight(db, day, table):
     last = db.execute(
         f"SELECT start_ms,value FROM {table} WHERE source_bundle=? "
         "AND metric_type='HKQuantityTypeIdentifierBodyMass' AND unit='kg' "
-        "AND dt<=? AND value>0 AND value<500 ORDER BY start_ms DESC LIMIT 1",
-        [WEIGHT_SOURCE, day],
+        "AND dt<=? AND start_ms<=? AND value>0 AND value<500 ORDER BY start_ms DESC LIMIT 1",
+        [WEIGHT_SOURCE, day, cutoff_ms],
     ).fetchall()
     week = [history[d] for d in dates[-7:] if d in history]
     previous = [history[d] for d in dates[-14:-7] if d in history]
@@ -73,10 +73,17 @@ def median(values):
     return statistics.median(values) if values else None
 
 
-def collect(db, day: date, table="samples_current", history_days=35) -> dict[str, Any]:
+def collect(
+    db, day: date, table="samples_current", history_days=35, *, as_of: datetime | None = None
+) -> dict[str, Any]:
     if table not in {"samples_current", "samples"}:
         raise ValueError("unsupported input relation")
-    first = day - timedelta(days=history_days)
+    activity_day = day - timedelta(days=1)
+    cutoff = as_of or datetime.combine(day, time.max, TZ)
+    if cutoff.tzinfo is None or cutoff.astimezone(TZ).date() != day:
+        raise ValueError("report cutoff must be timezone-aware and on report date")
+    cutoff_ms = int(cutoff.timestamp() * 1000)
+    first = activity_day - timedelta(days=history_days)
     sources = db.execute(
         f"SELECT source_bundle FROM {table} WHERE source_product LIKE 'Watch%' "
         "AND dt BETWEEN ? AND ? GROUP BY source_bundle ORDER BY count(*) DESC LIMIT 1",
@@ -86,8 +93,8 @@ def collect(db, day: date, table="samples_current", history_days=35) -> dict[str
     rows = (
         db.execute(
             f"SELECT metric_type,start_ms,end_ms,value,category,unit FROM {table} "
-            "WHERE source_bundle=? AND dt BETWEEN ? AND ? ORDER BY start_ms,end_ms",
-            [source, first - timedelta(days=2), day + timedelta(days=1)],
+            "WHERE source_bundle=? AND dt BETWEEN ? AND ? AND end_ms<=? ORDER BY start_ms,end_ms",
+            [source, first - timedelta(days=2), day, cutoff_ms],
         ).fetchall()
         if source
         else []
@@ -180,10 +187,11 @@ def collect(db, day: date, table="samples_current", history_days=35) -> dict[str
             "stages": stages,
             "vitals": vitals,
         }
-    history = [day - timedelta(days=i) for i in range(7, 0, -1)]
+    sleep_history = [day - timedelta(days=i) for i in range(7, 0, -1)]
+    history = [activity_day - timedelta(days=i) for i in range(7, 0, -1)]
     keys = ADDITIVE | {"RestingHeartRate", "HeartRateVariabilitySDNN", "WalkingHeartRateAverage"}
     daily_values = {}
-    for offset in range(history_days + 1):
+    for offset in range(history_days + 2):
         d = day - timedelta(days=offset)
         values = {}
         for key in keys:
@@ -196,7 +204,7 @@ def collect(db, day: date, table="samples_current", history_days=35) -> dict[str
     for key in keys:
         past = [daily_values[str(d)][key] for d in history if daily_values[str(d)][key] is not None]
         metrics[key] = {
-            "value": daily_values[str(day)][key],
+            "value": daily_values[str(activity_day)][key],
             "baseline": median(past),
             "days": len(past),
         }
@@ -210,17 +218,20 @@ def collect(db, day: date, table="samples_current", history_days=35) -> dict[str
         else []
     )
     return {
-        "schema_version": 2,
+        "schema_version": 3,
+        "activity_date": str(activity_day),
+        "sleep_date": str(day),
+        "as_of": cutoff.isoformat(),
         "date": str(day),
         "timezone": "Asia/Shanghai",
         "source_available": source is not None,
         "metrics": metrics,
         "sleep": nights.get(day),
         "nights": {str(k): v for k, v in sorted(nights.items())},
-        "sleep_baseline": median([nights[d]["minutes"] for d in history if d in nights]),
+        "sleep_baseline": median([nights[d]["minutes"] for d in sleep_history if d in nights]),
         "daily": daily_values,
         "vo2max": {"value": latest[0][0], "date": str(latest[0][1])} if latest else None,
-        "weight": collect_weight(db, day, table),
+        "weight": collect_weight(db, day, table, cutoff_ms),
     }
 
 
@@ -246,6 +257,8 @@ def change(value, baseline, unit):
 
 def render(report: dict[str, Any]) -> str:
     day = date.fromisoformat(report["date"])
+    activity_day = date.fromisoformat(report.get("activity_date", report["date"]))
+    activity_dates = [str(activity_day - timedelta(days=i)) for i in range(7, -1, -1)]
     sleep = report["sleep"]
     baseline = report["sleep_baseline"]
     dates = [str(day - timedelta(days=i)) for i in range(7, -1, -1)]
@@ -253,11 +266,23 @@ def render(report: dict[str, Any]) -> str:
     esc = html.escape
     title = "先关注睡眠时长与作息" if sleep and sleep["minutes"] < 420 else "把今天放进近期趋势里看"
     if not sleep:
-        title = "睡眠记录尚不完整，先看已知信息"
+        title = "昨晚睡眠尚未同步，先看已知信息"
+    cutoff_label = report.get("as_of", report.get("generated_at", str(day)))
+    if "T" in cutoff_label:
+        cutoff_label = (
+            datetime.fromisoformat(cutoff_label).astimezone(TZ).strftime("%Y-%m-%d %H:%M")
+        )
     body = [
-        f'<header><div><div class="eyebrow">每日 · 健康观察</div><h1><i class="fa-solid" aria-hidden="true">&#xf21e;</i>健康简报</h1><p class="date">{day} · 北京时间</p></div><div class="actions"><span class="badge">私人简报</span><button onclick="window.print()">打印 / 保存 PDF</button></div></header>',  # noqa: E501
+        f'<header><div><div class="eyebrow">每日 · 健康观察</div><h1><i class="fa-solid" aria-hidden="true">&#xf21e;</i>健康简报</h1><p class="date">{day} · 昨晚睡眠＋昨日活动 · 北京时间</p></div><div class="actions"><span class="badge">私人简报</span><button onclick="window.print()">打印 / 保存 PDF</button></div></header>',  # noqa: E501
         f'<section class="lead"><div class="label">今天重点</div><h2>{title}</h2><p>与自己的前 7 日记录比较，留意持续变化，并结合精神状态一起看。缺失记录不计为零，单日指标不用于诊断。</p></section>',  # noqa: E501
     ]
+    body.append(
+        f'<p class="note">睡眠：{day} 醒来的主睡眠；活动及全天心率 / HRV：{activity_day} 完整日；'
+        f"体重：截至 {esc(cutoff_label)}（北京时间）已收到的记录。"
+        "手机尚未补传的数据会在重新生成后更新。</p>"
+    )
+    if not sleep:
+        body.append('<p class="note">昨晚睡眠尚未同步；不会用更早一晚代替。</p>')
     stages = sleep["stages"] if sleep else {}
     stage_keys = ["asleepCore", "asleepREM", "asleepDeep", "asleepUnspecified", "asleep"]
     stage_values = [stages.get(k, 0) for k in stage_keys]
@@ -292,7 +317,7 @@ def render(report: dict[str, Any]) -> str:
         f'<p class="small">前 7 晚中位数：{duration(baseline)}。分期用于观察，不按单晚深睡比例打分；无记录日期保留空缺。</p><div class="chart-card mt-5"><h4>入睡 → 醒来 · 作息变化</h4><div class="schedule-frame"><canvas id="schedule" role="img" aria-label="入睡与醒来时间区间"></canvas></div><p class="small">条形包含期间清醒片段，不等于纯睡眠时长。</p></div></section>'  # noqa: E501
     )
     body.append(
-        '<section><div class="section-head"><h3>当天与近期常态</h3><span class="small">前 7 日每日值中位数</span></div><table><thead><tr><th>指标</th><th>当天</th><th>前 7 日</th><th>变化</th></tr></thead><tbody>'  # noqa: E501
+        '<section><div class="section-head"><h3>昨日活动与全天指标</h3><span class="small">前 7 日每日值中位数</span></div><table><thead><tr><th>指标</th><th>昨日</th><th>前 7 日</th><th>变化</th></tr></thead><tbody>'  # noqa: E501
     )
     for key, label, unit, digits in (
         ("StepCount", "手表步数", "步", 0),
@@ -306,9 +331,9 @@ def render(report: dict[str, Any]) -> str:
             f"<tr><td>{label}</td><td>{fmt(m['value'], digits)} {unit}</td><td>{fmt(m['baseline'], digits)} {unit}<br><small>有效 {m['days']}/7 日</small></td><td>{change(m['value'], m['baseline'], unit)}</td></tr>"  # noqa: E501
         )
     body.append(
-        f'</tbody></table><p class="note">站立达标小时：{fmt(report["daily"][str(day)]["stood_hours"])}。表示这些小时内有站立活动，并非连续站立这么久。运动时段不等于一次连续训练；活动热量不是热量缺口。</p></section>'  # noqa: E501
+        f'</tbody></table><p class="note">站立达标小时：{fmt(report["daily"][str(activity_day)]["stood_hours"])}。表示这些小时内有站立活动，并非连续站立这么久。运动时段不等于一次连续训练；活动热量不是热量缺口。</p></section>'  # noqa: E501
     )
-    sparse = [d[5:] for d in dates if report["daily"][d]["heart_rate_hours"] < 16]
+    sparse = [d[5:] for d in activity_dates if report["daily"][d]["heart_rate_hours"] < 16]
     if sparse:
         body.append(
             f'<p class="note">{esc("、".join(sparse))} 心率记录覆盖较少时段，可能存在佩戴或采集空缺；低步数不一定代表活动少。</p>'  # noqa: E501
@@ -319,13 +344,13 @@ def render(report: dict[str, Any]) -> str:
         body.append(
             '<section class="vitals-panel"><h3>体重 · IoT 体重秤</h3>'
             '<div class="sleep-grid">'
-            "<div><span>当天中位数</span>"
+            "<div><span>今日中位数 · 截至生成时</span>"
             f"<strong>{fmt(weight['today'], 2)}<small> kg</small></strong></div>"
             f"<div><span>近 7 日均值 · 有效 {weight['week_days']}/7 日</span>"
             f"<strong>{fmt(weight['week_mean'], 2)}<small> kg</small></strong></div>"
             f"<div><span>前 7 日均值 · 有效 {weight['previous_days']}/7 日</span>"
             f"<strong>{fmt(weight['previous_mean'], 2)}<small> kg</small></strong></div>"
-            f"<div><span>最近一次 · {esc(latest['at'][:10])}</span>"
+            f"<div><span>最近一次 · {esc(latest['at'][:16].replace('T', ' '))}</span>"
             f"<strong>{fmt(latest['kg'], 2)}<small> kg</small></strong></div></div>"
             '<div class="chart-frame"><canvas id="weight" role="img" '
             'aria-label="近28天体重每日中位数"></canvas></div>'

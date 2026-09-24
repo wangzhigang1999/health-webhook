@@ -52,13 +52,13 @@ uv run --no-sync health-webhook-migrate --source /path/to/events.jsonl
 
 ## 每日 CI
 
-`daily-report.yml` 每日 UTC 19:00（北京时间次日 03:00）运行，也可手动触发。GitHub 的 schedule 可能延迟，不作为实时保证。
+`daily-report.yml` 每日 UTC 04:00（北京时间 12:00）运行，也可手动触发。GitHub 的 schedule 可能延迟，不作为实时保证。
 
 仓库 Secrets：`OSS_ACCESS_KEY_ID`、`OSS_ACCESS_KEY_SECRET`；Bucket 默认 zhigang-health，北京公网 endpoint。CI 只在私有 OSS 写分析结果/日报，不将健康记录写进公开日志、Actions artifacts、Pages 或 Git 提交。
 
 CI 从分区 Parquet 检查点恢复 DuckDB，只导入新增原始对象；当前版本会重新导出有效样本，但内容不变的分区复用旧 OSS 对象。分析状态也按天保存，包含全部样本版本、删除事件和已导入对象；只上传变化的状态分区，不每天回传整个 DuckDB 文件。大文件使用有界并行分片上传；最终提交仍禁止覆盖。检查点和输出下载会产生 OSS 公网流量费。
 
-报表按北京时间前一日生成独立 HTML 健康简报，内嵌 Tailwind、Font Awesome 和 Chart.js，离线可读。内容包括入睡/醒来、睡眠分期和近期作息图、活动、静息心率与 HRV、夜间心率/呼吸/血氧及前 7 日个人基线。缺失不填零，同一手表来源比较，运动重叠合并，睡眠归入醒来日期；数据局限随报告显示。JSON 保存对应指标与趋势供复盘，技术计数保留在私有 manifest。03:00 生成前一完整日期的报告，补传会反映在后续快照中；不作健康诊断。Windows pull 同步后打开 `latest-report.html`。体重为独立链路，不把 HealthKit 中缺失解释为未称重。
+报表按北京时间当天日期生成独立 HTML 健康简报，内嵌 Tailwind、Font Awesome 和 Chart.js，离线可读。内容包括入睡/醒来、睡眠分期和近期作息图、活动、静息心率与 HRV、夜间心率/呼吸/血氧及前 7 日个人基线。缺失不填零，同一手表来源比较，运动重叠合并，睡眠归入醒来日期；数据局限随报告显示。JSON 保存对应指标与趋势供复盘，技术计数保留在私有 manifest。12:00 生成“昨晚睡眠＋昨日活动＋最新体重”：睡眠及夜间指标按当天醒来日期，活动及全天心率 / HRV 按昨日完整日期，体重截至生成时且显示测量时间；昨晚未同步时明确留空，不回退到旧睡眠。同日手动重跑会更新当天报告和固定入口，补传会反映在新快照中；不作健康诊断。Windows pull 同步后打开 `latest-report.html`。体重通过 IoT 独立链路归档至同一 OSS，缺失不解释为未称重。
 
 ## Windows 离线分析
 

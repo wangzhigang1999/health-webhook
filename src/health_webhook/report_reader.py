@@ -112,7 +112,8 @@ def report_page():
             + options
             + '</select></label> <button type="submit" style="display:inline">查看</button>'
             f'</form><a href="{link}">刷新</a>'
-            '<span style="font-size:12px">每天约 03:00 更新前一日 · 北京时间</span></nav>'
+            '<span style="font-size:12px">每天约 12:00 更新：'
+            "昨晚睡眠＋昨日活动 · 北京时间</span></nav>"
         )
         return response(body.replace("<body>", "<body>" + nav, 1))
     except Exception:

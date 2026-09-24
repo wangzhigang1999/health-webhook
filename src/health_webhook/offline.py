@@ -385,7 +385,7 @@ def build(args):
             key = f"{ROOT}/parquet/samples/dt={day}/{digest}.parquet"
             info = previous_files.get(key) or put_file(bucket, key, file)
             files.append({**info, "dt": str(day)})
-        report_day = (now + timedelta(hours=8) - timedelta(days=1)).date()
+        report_day = (now + timedelta(hours=8)).date()
         quality = dict(
             zip(
                 [
@@ -413,7 +413,7 @@ def build(args):
                 strict=True,
             )
         )
-        report = collect(db, report_day)
+        report = collect(db, report_day, as_of=now)
         report["generated_at"] = now.isoformat()
         report_path = export / "report.json"
         report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")

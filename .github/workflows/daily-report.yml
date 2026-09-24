@@ -1,7 +1,7 @@
 name: Daily private health report
 on:
   schedule:
-    - cron: '0 19 * * *'
+    - cron: '0 4 * * *'
   workflow_dispatch:
 permissions:
   contents: read
