@@ -1,0 +1,17 @@
+[Unit]
+Description=Pull personal Strava activities and streams to private health OSS
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/var/lib/dsh/workspace/health-webhook-v2
+EnvironmentFile=/var/lib/dsh/workspace/health-webhook/.env
+ExecStart=/var/lib/dsh/workspace/health-webhook-v2/.venv/bin/python -m health_webhook.strava_sync
+UMask=0077
+TimeoutStartSec=15min
+MemoryMax=192M
+CPUQuota=50%
+NoNewPrivileges=true
+PrivateTmp=true
+

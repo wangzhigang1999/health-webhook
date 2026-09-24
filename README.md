@@ -88,6 +88,41 @@ Windows 电脑关机不影响上传和每日 CI。Parquet 下载后可完全离�
 
 ## 开发验证
 
+### Strava 自动同步
+
+`python -m health_webhook.strava_sync` 使用个人 OAuth 授权（`read,activity:read_all`），
+每小时拉取目录并优先补齐最新活动；单次最多 30 个 API 请求，达到远端额度的 80% 时暂停，
+下次从已确认 OSS 上传的位置继续。历史数据需要多次运行完成，限流不丢进度。
+安装 `deploy/health-strava-sync.service` 和 `.timer` 即可在 ECS 独立运行。
+
+凭证保存于 `DATA_DIR/strava/token.json`（目录 0700、文件 0600），包含
+`client_id/client_secret/access_token/refresh_token/expires_at`，刷新令牌原子更新；
+不提交 Git、不输出日志、不上传 OSS。`cursor.json` 和待提交日志属于必要同步状态，
+迁移时保留。历史更新产生新 UUID 和旧版本删除事件；完整目录缺失的记录经单条查询
+确认不可访问后从当前分析视图移除，私有 raw 审计版本仍保留。最近七天活动每日重查，
+补收延迟到达的曲线。
+
+原始详情和 time/heart rate/power/cadence 等 streams 保存在运动样本的 `payload.strava`，
+复用私有 raw → 每日 CI → 按日 Parquet 链路；不请求 GPS 经纬度曲线。
+没有传感器数据就保留缺失，移动时间与经过时间分别保存，`device_watts` 原值用于区分
+设备提供的功率和估算值。不要将 Apple Health 的 Strava 副本与 API 记录相加；跨来源
+运动统计须按同一活动去重，现有日报尚未新增该训练汇总模块。
+
+Windows DuckDB 查询例子（先 pull 最新快照）：
+
+```sql
+SELECT dt, payload->'strava'->>'activityId' AS activity_id,
+       payload->'workout'->>'movingTimeSeconds' AS moving_seconds,
+       payload->'strava'->'streams'->'time'->'data' AS seconds,
+       payload->'strava'->'streams'->'heartrate'->'data' AS heart_rate,
+       payload->'strava'->'streams'->'watts'->'data' AS power
+FROM workouts WHERE source_bundle = 'com.strava.api.personal';
+```
+
+部署前需自行评估 Strava 当前 API 使用条款和个人数据用途；API 访问可被平台调整。
+
+### 检查命令
+
 ```bash
 uv sync --frozen --group analysis
 uv run --no-sync ruff check .

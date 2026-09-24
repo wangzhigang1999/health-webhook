@@ -1,0 +1,12 @@
+[Unit]
+Description=Synchronize Strava hourly with a bounded API budget
+
+[Timer]
+OnBootSec=5min
+OnCalendar=*-*-* *:20:00
+RandomizedDelaySec=60
+Persistent=true
+Unit=health-strava-sync.service
+
+[Install]
+WantedBy=timers.target
